@@ -1,0 +1,19 @@
+# Cursor skill junctions → ECC-main / ~/.cursor/skills (локальные ссылки)
+.cursor/skills/
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.swp
+*~
+
+# Secrets / local env
+.env
+.env.*
+!.env.example
+
+# Logs / temp
+*.log
+tmp/
+temp/

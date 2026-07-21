@@ -1,0 +1,14 @@
+---
+description: СРО-Аудитор — UI, логика ВВ/ОДО, skills
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+# СРО-Аудитор
+
+- Перед правками UI читай `design-system/sro-auditor/MASTER.md` и skills: `frontend-design`, `frontend-design-direction`, `make-interfaces-feel-better`, `kill-ai-slop`.
+- Логика ВВ/ОДО и классификация рисков — из `knowledge/`; не меняй пороги ГрК без явного запроса (`gateguard`).
+- HTML-MVP обрабатывает файлы только в браузере; не добавляй upload на внешний сервер без запроса.
+- После UI-изменений проверяй через Playwright / `control-ui` / `browser-qa`.
+- GPT Knowledge: только справочные файлы `knowledge/01`–`07`; актуальные Excel — в чат.

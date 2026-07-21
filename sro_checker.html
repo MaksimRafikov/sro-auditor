@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>СРО-Аудитор — проверка ВВ/ОДО</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="./vendor/xlsx.full.min.js"></script>
+  <style>
+    :root {
+      --color-primary: #64748b;
+      --color-secondary: #94a3b8;
+      --color-cta: #f97316;
+      --color-cta-hover: #ea580c;
+      --color-background: #f1f5f9;
+      --color-panel: #ffffff;
+      --color-text: #334155;
+      --color-ink: #0f172a;
+      --color-muted: #64748b;
+      --color-line: #d8dee8;
+      --color-crit: #b91c1c;
+      --color-crit-bg: #fef2f2;
+      --color-warn: #b45309;
+      --color-warn-bg: #fffbeb;
+      --color-ok: #047857;
+      --color-ok-bg: #ecfdf5;
+      --color-soft: #f8fafc;
+      --font-body: "Fira Sans", system-ui, sans-serif;
+      --font-mono: "Fira Code", ui-monospace, monospace;
+      --radius: 8px;
+      --radius-outer: 12px;
+      --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+      --shadow-md: 0 8px 24px rgba(15, 23, 42, 0.08);
+      --space-xs: 4px;
+      --space-sm: 8px;
+      --space-md: 16px;
+      --space-lg: 24px;
+      --space-xl: 32px;
+      --focus: 0 0 0 3px rgba(249, 115, 22, 0.35);
+    }
+
+    * { box-sizing: border-box; }
+    html {
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: var(--font-body);
+      color: var(--color-text);
+      background-color: var(--color-background);
+      background-image:
+        linear-gradient(rgba(100, 116, 139, 0.07) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(100, 116, 139, 0.07) 1px, transparent 1px),
+        radial-gradient(900px 420px at 0% -10%, rgba(249, 115, 22, 0.08), transparent 55%),
+        radial-gradient(700px 380px at 100% 0%, rgba(51, 65, 85, 0.07), transparent 50%);
+      background-size: 28px 28px, 28px 28px, auto, auto;
+      line-height: 1.45;
+    }
+
+    .wrap {
+      max-width: 1160px;
+      margin: 0 auto;
+      padding: 28px 18px 72px;
+    }
+
+    .reveal { animation: fadeUp 0.5s ease both; }
+    .reveal:nth-child(1) { animation-delay: 0.02s; }
+    .reveal:nth-child(2) { animation-delay: 0.06s; }
+    .reveal:nth-child(3) { animation-delay: 0.1s; }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .reveal, .file-card, button, .tabs button, .stat {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+
+    header.top {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: 1fr auto;
+      align-items: end;
+      margin-bottom: 18px;
+    }
+    @media (max-width: 720px) {
+      header.top { grid-template-columns: 1fr; }
+    }
+
+    .brand {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+    }
+    .mark {
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      background: #1e293b;
+      color: #fff;
+      display: grid;
+      place-items: center;
+      border: 1px solid #0f172a;
+      flex-shrink: 0;
+    }
+    .mark svg { width: 22px; height: 22px; }
+    .brand h1 {
+      margin: 0;
+      font-family: var(--font-mono);
+      font-size: clamp(1.35rem, 2.2vw, 1.75rem);
+      font-weight: 700;
+      letter-spacing: -0.04em;
+      color: var(--color-ink);
+      text-wrap: balance;
+    }
+    .brand p {
+      margin: 4px 0 0;
+      max-width: 52ch;
+      color: var(--color-muted);
+      font-size: 0.92rem;
+      text-wrap: pretty;
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      justify-content: flex-end;
+    }
+    .chip {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      padding: 5px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--color-line);
+      background: rgba(255, 255, 255, 0.85);
+      color: var(--color-muted);
+    }
+    .chip.live {
+      border-color: rgba(249, 115, 22, 0.4);
+      color: var(--color-cta-hover);
+      background: #fff7ed;
+    }
+
+    .panel {
+      background: var(--color-panel);
+      border: 1px solid var(--color-line);
+      border-radius: var(--radius-outer);
+      padding: 20px 24px;
+      box-shadow: var(--shadow-sm);
+    }
+    .panel + .panel { margin-top: 16px; }
+
+    .section-label {
+      margin: 0 0 12px;
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+    }
+
+    .uploads {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    @media (max-width: 720px) {
+      .uploads { grid-template-columns: 1fr; }
+    }
+
+    .file-card {
+      position: relative;
+      display: block;
+      border: 1.5px dashed var(--color-secondary);
+      border-radius: calc(var(--radius) + 4px);
+      padding: 16px;
+      background: var(--color-soft);
+      cursor: pointer;
+      transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+      min-height: 124px;
+    }
+    .file-card:hover,
+    .file-card:focus-within {
+      border-color: var(--color-primary);
+      box-shadow: 0 0 0 3px rgba(100, 116, 139, 0.16);
+    }
+    .file-card.filled {
+      border-style: solid;
+      border-color: var(--color-primary);
+      background: #fff;
+    }
+    .file-card .ico {
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      background: #e8eef5;
+      color: var(--color-ink);
+      display: grid;
+      place-items: center;
+      margin-bottom: 10px;
+    }
+    .file-card .ico svg { width: 18px; height: 18px; }
+    .file-card strong {
+      display: block;
+      color: var(--color-ink);
+      font-size: 0.98rem;
+      margin-bottom: 4px;
+    }
+    .file-card .desc {
+      color: var(--color-muted);
+      font-size: 0.86rem;
+      text-wrap: pretty;
+    }
+    .file-card .fname {
+      margin-top: 10px;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--color-primary);
+      word-break: break-all;
+    }
+    .file-card input {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+    }
+
+    .actions {
+      margin-top: 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+    button {
+      font-family: var(--font-body);
+      font-weight: 600;
+      font-size: 0.92rem;
+      border: 0;
+      border-radius: var(--radius);
+      padding: 11px 18px;
+      cursor: pointer;
+      transition: background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease, color 180ms ease;
+    }
+    button:focus-visible { outline: none; box-shadow: var(--focus); }
+    button.primary {
+      background: var(--color-cta);
+      color: #fff;
+    }
+    button.primary:hover:not(:disabled) { background: var(--color-cta-hover); }
+    button.primary:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    button.ghost {
+      background: #fff;
+      color: var(--color-text);
+      border: 1px solid var(--color-line);
+    }
+    button.ghost:hover {
+      background: var(--color-soft);
+      border-color: var(--color-secondary);
+    }
+    .hint {
+      color: var(--color-muted);
+      font-size: 0.88rem;
+      flex: 1 1 180px;
+    }
+    .error {
+      display: none;
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: var(--radius);
+      background: var(--color-crit-bg);
+      color: var(--color-crit);
+      border: 1px solid #fecaca;
+    }
+
+    /* Summary strip — one bar, not a card grid */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+      gap: 1px;
+      border: 1px solid var(--color-line);
+      border-radius: var(--radius-outer);
+      background: var(--color-line);
+      overflow: hidden;
+    }
+    .stat {
+      padding: 12px 14px;
+      min-height: 68px;
+      background: #fff;
+    }
+    .stat .v {
+      font-family: var(--font-mono);
+      font-size: 1.15rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--color-ink);
+      letter-spacing: -0.03em;
+    }
+    .stat .l {
+      margin-top: 2px;
+      color: var(--color-muted);
+      font-size: 0.76rem;
+    }
+    .stat.crit .v { color: var(--color-crit); }
+    .stat.warn .v { color: var(--color-warn); }
+    .stat.ok .v { color: var(--color-ok); }
+
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 16px 0 10px;
+    }
+    .tabs button {
+      background: #fff;
+      border: 1px solid var(--color-line);
+      color: var(--color-muted);
+      padding: 8px 12px;
+      border-radius: var(--radius);
+    }
+    .tabs button:hover {
+      border-color: var(--color-secondary);
+      color: var(--color-ink);
+    }
+    .tabs button.active {
+      background: #1e293b;
+      border-color: #1e293b;
+      color: #fff;
+    }
+
+    .table-wrap {
+      overflow: auto;
+      border: 1px solid var(--color-line);
+      border-radius: var(--radius-outer);
+      max-height: min(62vh, 720px);
+      background: #fff;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.86rem;
+    }
+    th, td {
+      padding: 9px 11px;
+      border-bottom: 1px solid var(--color-line);
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #eef2f7;
+      color: var(--color-ink);
+      font-weight: 600;
+      font-size: 0.76rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    tbody tr:hover td { background: #f8fafc; }
+    td:first-child, th:first-child { position: sticky; left: 0; background: inherit; }
+    th:first-child { background: #eef2f7; }
+    tbody tr:hover td:first-child { background: #f8fafc; }
+    td.num, th.num {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+      font-size: 0.82rem;
+    }
+
+    /* Risk stamps (ink stamp, not soft pill) */
+    .stamp,
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      border: 1px solid currentColor;
+      line-height: 1.3;
+    }
+    .stamp.crit, .pill.crit {
+      background: var(--color-crit-bg);
+      color: var(--color-crit);
+    }
+    .stamp.warn, .pill.warn {
+      background: var(--color-warn-bg);
+      color: var(--color-warn);
+    }
+    .stamp.ok, .pill.ok {
+      background: var(--color-ok-bg);
+      color: var(--color-ok);
+    }
+
+    .hidden { display: none !important; }
+    footer.note {
+      margin-top: 14px;
+      color: var(--color-muted);
+      font-size: 0.82rem;
+      text-wrap: pretty;
+    }
+    footer.note code {
+      font-family: var(--font-mono);
+      font-size: 0.78em;
+      background: #e8eef5;
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+
+    @media (max-width: 720px) {
+      .panel { padding: 16px; }
+      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="top reveal">
+      <div class="brand">
+        <div class="mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M4 19V5h7l2 3h7v11H4z" />
+            <path d="M8 19v-6h8v6" />
+          </svg>
+        </div>
+        <div>
+          <h1>СРО-Аудитор</h1>
+          <p>Проверка лимитов ВВ и ОДО. Расчёт в браузере — файлы никуда не уходят.</p>
+        </div>
+      </div>
+      <div class="meta">
+        <span class="chip live">локально · без сервера</span>
+        <span class="chip">ВВ · один договор</span>
+        <span class="chip">ОДО · портфель</span>
+      </div>
+    </header>
+
+    <section class="panel reveal" aria-labelledby="upload-title">
+      <h2 id="upload-title" class="section-label">Загрузка · прогон</h2>
+      <div class="uploads">
+        <label class="file-card" id="membersCard">
+          <div class="ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 7h8M8 12h8M8 17h5"/><rect x="4" y="3" width="16" height="18" rx="2"/></svg>
+          </div>
+          <strong>1. Реестр членов СРО</strong>
+          <div class="desc">Excel/CSV: ИНН, уровни ВВ/ОДО, состояние права</div>
+          <div class="fname" id="membersName">файл не выбран</div>
+          <input id="membersFile" type="file" accept=".xlsx,.xls,.csv" aria-label="Реестр членов СРО" />
+        </label>
+        <label class="file-card" id="contractsCard">
+          <div class="ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg>
+          </div>
+          <strong>2. Реестр договоров</strong>
+          <div class="desc">Excel/CSV: ИНН, стоимость к учёту, исполнено, вид закупки</div>
+          <div class="fname" id="contractsName">файл не выбран</div>
+          <input id="contractsFile" type="file" accept=".xlsx,.xls,.csv" aria-label="Реестр договоров" />
+        </label>
+      </div>
+      <div class="actions">
+        <button class="ghost" id="sampleBtn" type="button">Демо-данные</button>
+        <button class="primary" id="runBtn" disabled type="button">Проверить</button>
+        <button class="ghost hidden" id="exportBtn" type="button">Скачать CSV</button>
+        <span class="hint" id="fileHint">Выберите оба файла или загрузите демо.</span>
+      </div>
+      <div class="error" id="errorBox" role="alert"></div>
+    </section>
+
+    <section class="panel hidden reveal" id="results" aria-live="polite">
+      <h2 class="section-label">Сводка · риски</h2>
+      <div class="stats" id="stats"></div>
+      <div class="tabs" role="tablist" aria-label="Разрезы отчёта">
+        <button type="button" class="active" data-tab="companies" role="tab" aria-selected="true">Все</button>
+        <button type="button" data-tab="risks" role="tab" aria-selected="false">Критично</button>
+        <button type="button" data-tab="manual" role="tab" aria-selected="false">Ручная</button>
+        <button type="button" data-tab="contracts" role="tab" aria-selected="false">Договоры</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead id="thead"></thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <footer class="note">
+        <code>ВВ</code> — max одного договора.
+        <code>ОДО</code> — сумма остатков по конкурентным договорам.
+        Расхождение остатка с реестром &gt; 5% или &gt; 1 млн ₽ → ручная проверка.
+      </footer>
+    </section>
+  </div>
+
+  <script src="./_sro_logic.js"></script>
+  <script>
+    (function enhanceUi() {
+      const membersCard = document.getElementById("membersCard");
+      const contractsCard = document.getElementById("contractsCard");
+      const membersName = document.getElementById("membersName");
+      const contractsName = document.getElementById("contractsName");
+      const membersInput = document.getElementById("membersFile");
+      const contractsInput = document.getElementById("contractsFile");
+
+      function markFilled(card, nameEl, file) {
+        if (!file) return;
+        card.classList.add("filled");
+        card.dataset.ready = "true";
+        nameEl.textContent = file.name;
+      }
+
+      membersInput.addEventListener("change", () => {
+        if (membersInput.files[0]) markFilled(membersCard, membersName, membersInput.files[0]);
+      });
+      contractsInput.addEventListener("change", () => {
+        if (contractsInput.files[0]) markFilled(contractsCard, contractsName, contractsInput.files[0]);
+      });
+
+      document.getElementById("sampleBtn").addEventListener("click", () => {
+        membersCard.classList.add("filled");
+        contractsCard.classList.add("filled");
+        membersCard.dataset.ready = "true";
+        contractsCard.dataset.ready = "true";
+        membersName.textContent = "демо · реестр членов";
+        contractsName.textContent = "демо · договоры";
+      });
+    })();
+  </script>
+</body>
+</html>
