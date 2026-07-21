@@ -1,14 +1,21 @@
 # СРО оценка рисков ОДО и ВВ
 
-Локальный **СРО-Аудитор**: проверка лимитов ВВ/ОДО + комплект Knowledge для Custom GPT.
+**СРО-Аудитор**: проверка лимитов ВВ/ОДО + комплект Knowledge для Custom GPT.
+
+| | |
+|--|--|
+| **Онлайн** | https://maksimrafikov.github.io/sro-auditor/ |
+| **Репозиторий** | https://github.com/MaksimRafikov/sro-auditor |
 
 Источник логики: [чат «СРО проект»](https://chatgpt.com/share/6a5f60a5-ff88-83eb-9344-1654e17f9f08).
 
 ## Быстрый старт
 
-1. Откройте `sro_checker.html` в браузере (или `python -m http.server 8765` в этой папке → `http://127.0.0.1:8765/sro_checker.html`).
+1. Откройте [онлайн-чекер](https://maksimrafikov.github.io/sro-auditor/) или локально `sro_checker.html` (`python -m http.server 8765` → `http://127.0.0.1:8765/sro_checker.html`).
 2. Загрузите два Excel/CSV **или** нажмите **Демо-данные**.
 3. **Проверить** → сводка / риски / CSV.
+
+Файлы обрабатываются только в браузере — на сервер не уходят.
 
 Логика расчёта: `_sro_logic.js` (подключается из HTML).
 
