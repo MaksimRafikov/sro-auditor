@@ -37,7 +37,7 @@
     async function readTable(file) {
       if (typeof XLSX === "undefined") {
         throw new Error(
-          "Библиотека Excel не загрузилась. Откройте страницу через локальный сервер (python -m http.server) из папки проекта — нужен файл vendor/xlsx.full.min.js."
+          "Библиотека Excel не загрузилась. Откройте страницу через локальный сервер из папки проекта — нужен файл vendor/xlsx-js-style.min.js."
         );
       }
       const buf = await file.arrayBuffer();
@@ -673,81 +673,323 @@
       }
     }
 
-    function toCsv(rows) {
-      return rows
-        .map((r) =>
-          r
-            .map((v) => {
-              const s = String(v ?? "");
-              return /["\n,;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-            })
-            .join(";")
-        )
-        .join("\n");
+    const XL = {
+      header: {
+        font: { bold: true, color: { rgb: "FFFFFF" }, sz: 11, name: "Calibri" },
+        fill: { patternType: "solid", fgColor: { rgb: "1E293B" } },
+        alignment: { vertical: "center", wrapText: true, horizontal: "left" },
+        border: {
+          top: { style: "thin", color: { rgb: "CBD5E1" } },
+          bottom: { style: "thin", color: { rgb: "CBD5E1" } },
+          left: { style: "thin", color: { rgb: "CBD5E1" } },
+          right: { style: "thin", color: { rgb: "CBD5E1" } },
+        },
+      },
+      cell: {
+        font: { sz: 10, name: "Calibri" },
+        alignment: { vertical: "center", wrapText: true },
+        border: {
+          top: { style: "thin", color: { rgb: "E2E8F0" } },
+          bottom: { style: "thin", color: { rgb: "E2E8F0" } },
+          left: { style: "thin", color: { rgb: "E2E8F0" } },
+          right: { style: "thin", color: { rgb: "E2E8F0" } },
+        },
+      },
+      label: {
+        font: { bold: true, sz: 10, name: "Calibri", color: { rgb: "334155" } },
+        fill: { patternType: "solid", fgColor: { rgb: "F1F5F9" } },
+        alignment: { vertical: "center" },
+      },
+      money: "#,##0",
+      risk: {
+        КРИТИЧНО: {
+          font: { bold: true, sz: 10, color: { rgb: "B91C1C" }, name: "Calibri" },
+          fill: { patternType: "solid", fgColor: { rgb: "FEE2E2" } },
+          alignment: { vertical: "center", horizontal: "center" },
+        },
+        "РУЧНАЯ ПРОВЕРКА": {
+          font: { bold: true, sz: 10, color: { rgb: "B45309" }, name: "Calibri" },
+          fill: { patternType: "solid", fgColor: { rgb: "FEF3C7" } },
+          alignment: { vertical: "center", horizontal: "center" },
+        },
+        НОРМА: {
+          font: { bold: true, sz: 10, color: { rgb: "047857" }, name: "Calibri" },
+          fill: { patternType: "solid", fgColor: { rgb: "D1FAE5" } },
+          alignment: { vertical: "center", horizontal: "center" },
+        },
+      },
+      rowFill: {
+        КРИТИЧНО: "FEF2F2",
+        "РУЧНАЯ ПРОВЕРКА": "FFFBEB",
+        НОРМА: "FFFFFF",
+      },
+    };
+
+    function excelLimit(v) {
+      if (v === null || v === undefined) return "";
+      if (v === INF) return "без предела";
+      return v;
     }
 
-    function exportCsv() {
+    function styleSheet(ws, opts) {
+      const { moneyCols = [], riskCol = -1, headerRows = 1, widths = [] } = opts;
+      if (!ws["!ref"]) return ws;
+      const range = XLSX.utils.decode_range(ws["!ref"]);
+      ws["!cols"] = widths.map((wch) => ({ wch }));
+      ws["!rows"] = [{ hpt: 24 }];
+      for (let R = range.s.r; R <= range.e.r; R++) {
+        for (let C = range.s.c; C <= range.e.c; C++) {
+          const addr = XLSX.utils.encode_cell({ r: R, c: C });
+          if (!ws[addr]) continue;
+          const isHeader = R < headerRows;
+          let base = isHeader ? { ...XL.header } : { ...XL.cell };
+          if (!isHeader && riskCol >= 0) {
+            const riskAddr = XLSX.utils.encode_cell({ r: R, c: riskCol });
+            const riskVal = ws[riskAddr] && ws[riskAddr].v;
+            const fillRgb = XL.rowFill[riskVal];
+            if (fillRgb && fillRgb !== "FFFFFF") {
+              base = {
+                ...base,
+                fill: { patternType: "solid", fgColor: { rgb: fillRgb } },
+              };
+            }
+            if (C === riskCol && XL.risk[riskVal]) {
+              base = { ...XL.risk[riskVal], border: XL.cell.border };
+            }
+          }
+          if (!isHeader && moneyCols.includes(C) && typeof ws[addr].v === "number") {
+            ws[addr].z = XL.money;
+            base = {
+              ...base,
+              alignment: { ...base.alignment, horizontal: "right" },
+            };
+          }
+          if (isHeader && opts.summaryLabels && C === 0) {
+            base = { ...XL.label, border: XL.cell.border };
+          }
+          ws[addr].s = base;
+        }
+      }
+      if (opts.autofilter && range.e.r >= headerRows) {
+        ws["!autofilter"] = { ref: ws["!ref"] };
+      }
+      ws["!freeze"] = { xSplit: 0, ySplit: headerRows, topLeftCell: "A" + (headerRows + 1), state: "frozen" };
+      return ws;
+    }
+
+    function companyRows(list) {
+      return list.map((c) => [
+        c.inn,
+        c.name,
+        c.found ? "да" : "нет",
+        c.right,
+        c.vvText || "",
+        excelLimit(c.vvLimit),
+        c.maxContract || 0,
+        c.vvCheck,
+        c.odoText || "",
+        excelLimit(c.odoLimit),
+        c.odoResidual || 0,
+        c.registryOblig == null ? "" : c.registryOblig,
+        c.odoCheck,
+        c.contractsCount,
+        c.competitiveCount,
+        c.contractsInSuspensionCount || 0,
+        c.risk,
+        c.comment || "",
+      ]);
+    }
+
+    const COMPANY_HEADER = [
+      "ИНН",
+      "Компания",
+      "Найдена в реестре",
+      "Состояние права",
+      "Уровень ВВ",
+      "Лимит ВВ, ₽",
+      "Макс. один договор, ₽",
+      "Проверка ВВ",
+      "Уровень ОДО",
+      "Лимит ОДО, ₽",
+      "Остаток ОДО по договорам, ₽",
+      "Расчёт обязательств из реестра, ₽",
+      "Проверка ОДО",
+      "Кол-во договоров",
+      "Кол-во конкурентных",
+      "Договоров в периоде приостановки",
+      "Итоговый риск",
+      "Комментарий",
+    ];
+
+    const COMPANY_WIDTHS = [12, 28, 12, 16, 18, 14, 16, 12, 18, 14, 18, 18, 14, 10, 10, 12, 16, 42];
+    const COMPANY_MONEY = [5, 6, 9, 10, 11];
+    const COMPANY_RISK_COL = 16;
+
+    function exportExcel() {
       const r = state.result;
       if (!r) return;
-      const rows = [
+      if (typeof XLSX === "undefined") {
+        showError("Библиотека Excel не загрузилась.");
+        return;
+      }
+
+      const s = r.summary;
+      const today = new Date();
+      const dateStr =
+        String(today.getDate()).padStart(2, "0") +
+        "." +
+        String(today.getMonth() + 1).padStart(2, "0") +
+        "." +
+        today.getFullYear();
+
+      const summaryAoA = [
+        ["Показатель", "Значение"],
+        ["Дата проверки", dateStr],
+        ["Всего договоров", s.contracts],
+        ["из них по 44-ФЗ", s.byFz44],
+        ["по 223-ФЗ", s.byFz223],
+        ["по 615-ФЗ", s.byFz615],
+        ["прямые", s.byDirect],
+        ["прочие конкурентные", s.byOtherComp],
+        ["без вида закупки", s.byUnclear],
+        ["Уникальных ИНН", s.inns],
+        ["Найдено в реестре", s.found],
+        ["Не найдено", s.notFound],
+        ["1. Превышен уровень ОДО", s.odoExceed],
+        ["2. Нет ОДО (есть договоры ОДО)", s.noOdo],
+        ["3. Превышен уровень ВВ", s.vvExceed],
+        ["4. Приостановлен", s.suspended],
+        ["5. Ручная проверка (остаток ОДО ≠ реестр)", s.odoMismatch],
+        ["Критичные (всего)", s.critical],
+        ["Ручная проверка (всего)", s.manual],
+        ["Норма", s.ok],
+        ["Сумма, принятая СРО к учёту, ₽", s.sumAccepted],
+        ["Остаток ОДО (расчёт), ₽", s.odoResidualTotal],
+      ];
+
+      const contractsAoA = [
         [
           "ИНН",
           "Компания",
-          "Найдена",
-          "Право",
-          "Уровень ВВ",
-          "Лимит ВВ",
-          "Max договор",
-          "Проверка ВВ",
-          "Уровень ОДО",
-          "Лимит ОДО",
-          "Остаток ОДО",
-          "Обязательства реестра",
-          "Проверка ОДО",
-          "Договоров",
-          "Конкурентных",
+          "Номер договора",
+          "Дата",
+          "Стоимость к учёту, ₽",
+          "Исполнено, ₽",
+          "Остаток, ₽",
+          "Способ закупки",
+          "Тип",
+          "Конкурентный",
+          "Участвует в ОДО",
           "В периоде приостановки",
-          "Превышен ОДО",
-          "Нет ОДО",
-          "Превышен ВВ",
-          "Приостановлен",
-          "Расхождение ОДО",
-          "Риск",
           "Комментарий",
         ],
-        ...r.companies.map((c) => [
-          c.inn,
-          c.name,
-          c.found ? "да" : "нет",
-          c.right,
-          c.vvText,
-          c.vvLimit === INF ? "inf" : c.vvLimit,
-          c.maxContract,
-          c.vvCheck,
-          c.odoText,
-          c.odoLimit === INF ? "inf" : c.odoLimit,
-          c.odoResidual,
-          c.registryOblig,
-          c.odoCheck,
-          c.contractsCount,
-          c.competitiveCount,
-          c.contractsInSuspensionCount,
-          c.flags.odoExceed ? "да" : "нет",
-          c.flags.noOdo ? "да" : "нет",
-          c.flags.vvExceed ? "да" : "нет",
-          c.flags.suspended ? "да" : "нет",
-          c.flags.odoMismatch ? "да" : "нет",
-          c.risk,
-          c.comment,
-        ]),
+        ...r.contracts.map((c) => {
+          const typeLabel =
+            c.methodType === "44"
+              ? "44-ФЗ"
+              : c.methodType === "223"
+                ? "223-ФЗ"
+                : c.methodType === "615"
+                  ? "615-ФЗ"
+                  : c.methodType === "direct"
+                    ? "прямой"
+                    : c.methodType === "other_comp"
+                      ? "прочий конкурентный"
+                      : "неясно";
+          const notes = [];
+          if (c.weirdMoney) notes.push("странный формат суммы");
+          if (c.assumptionNoDone) notes.push("исполнение не найдено");
+          if (c.inSuspensionPeriod) notes.push("дата в периоде приостановки");
+          return [
+            c.inn,
+            c.name,
+            c.number,
+            c.date || "",
+            c.amount == null ? "" : c.amount,
+            c.done,
+            c.residual == null ? "" : c.residual,
+            c.method || "",
+            typeLabel,
+            c.unclear ? "неясно" : c.competitive ? "да" : "нет",
+            c.competitive ? "да" : "нет",
+            c.inSuspensionPeriod ? "да" : "нет",
+            notes.join("; "),
+          ];
+        }),
       ];
-      const blob = new Blob(["\uFEFF" + toCsv(rows)], { type: "text/csv;charset=utf-8" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = "sro_audit_report.csv";
-      a.click();
-      URL.revokeObjectURL(a.href);
+
+      const companiesAoA = [COMPANY_HEADER, ...companyRows(r.companies)];
+      const risksAoA = [COMPANY_HEADER, ...companyRows(r.risks)];
+      const manualAoA = [COMPANY_HEADER, ...companyRows(r.manual)];
+
+      const wsSummary = XLSX.utils.aoa_to_sheet(summaryAoA);
+      wsSummary["!cols"] = [{ wch: 48 }, { wch: 22 }];
+      wsSummary["!rows"] = [{ hpt: 24 }];
+      const sumRange = XLSX.utils.decode_range(wsSummary["!ref"]);
+      for (let R = sumRange.s.r; R <= sumRange.e.r; R++) {
+        const a = XLSX.utils.encode_cell({ r: R, c: 0 });
+        const b = XLSX.utils.encode_cell({ r: R, c: 1 });
+        if (R === 0) {
+          if (wsSummary[a]) wsSummary[a].s = XL.header;
+          if (wsSummary[b]) wsSummary[b].s = XL.header;
+          continue;
+        }
+        if (wsSummary[a]) wsSummary[a].s = { ...XL.label, border: XL.cell.border };
+        if (wsSummary[b]) {
+          const isMoney =
+            typeof wsSummary[b].v === "number" &&
+            /₽|остаток ОДО|сумма/i.test(String(wsSummary[a]?.v || ""));
+          if (isMoney) wsSummary[b].z = XL.money;
+          wsSummary[b].s = {
+            ...XL.cell,
+            font: { bold: true, sz: 10, name: "Calibri" },
+            alignment: {
+              vertical: "center",
+              horizontal: typeof wsSummary[b].v === "number" ? "right" : "left",
+            },
+          };
+        }
+      }
+
+      const wsCompanies = styleSheet(XLSX.utils.aoa_to_sheet(companiesAoA), {
+        headerRows: 1,
+        widths: COMPANY_WIDTHS,
+        moneyCols: COMPANY_MONEY,
+        riskCol: COMPANY_RISK_COL,
+        autofilter: true,
+      });
+      const wsContracts = styleSheet(XLSX.utils.aoa_to_sheet(contractsAoA), {
+        headerRows: 1,
+        widths: [12, 28, 14, 12, 16, 14, 14, 16, 14, 12, 12, 12, 36],
+        moneyCols: [4, 5, 6],
+        autofilter: true,
+      });
+      const wsRisks = styleSheet(XLSX.utils.aoa_to_sheet(risksAoA), {
+        headerRows: 1,
+        widths: COMPANY_WIDTHS,
+        moneyCols: COMPANY_MONEY,
+        riskCol: COMPANY_RISK_COL,
+        autofilter: true,
+      });
+      const wsManual = styleSheet(XLSX.utils.aoa_to_sheet(manualAoA), {
+        headerRows: 1,
+        widths: COMPANY_WIDTHS,
+        moneyCols: COMPANY_MONEY,
+        riskCol: COMPANY_RISK_COL,
+        autofilter: true,
+      });
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, wsSummary, "Сводка");
+      XLSX.utils.book_append_sheet(wb, wsCompanies, "Проверка компаний");
+      XLSX.utils.book_append_sheet(wb, wsContracts, "Договоры с расчётом");
+      XLSX.utils.book_append_sheet(wb, wsRisks, "Риски");
+      XLSX.utils.book_append_sheet(wb, wsManual, "Ручная проверка");
+
+      const fname = `СРО_сверка_договоры_лимиты_${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}.xlsx`;
+      XLSX.writeFile(wb, fname);
     }
+
 
     const SAMPLE_MEMBERS = [
       {
@@ -883,7 +1125,7 @@
     });
 
     runBtn.addEventListener("click", run);
-    exportBtn.addEventListener("click", exportCsv);
+    exportBtn.addEventListener("click", exportExcel);
     sampleBtn.addEventListener("click", () => {
       state.membersRows = SAMPLE_MEMBERS;
       state.contractsRows = SAMPLE_CONTRACTS;
