@@ -287,37 +287,80 @@
       border: 1px solid #fecaca;
     }
 
-    /* Summary strip — one bar, not a card grid */
-    .stats {
+    /* Summary — structured report (contracts + member risks) */
+    .summary-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
-      gap: 1px;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    @media (max-width: 820px) {
+      .summary-grid { grid-template-columns: 1fr; }
+    }
+    .summary-block {
       border: 1px solid var(--color-line);
       border-radius: var(--radius-outer);
-      background: var(--color-line);
-      overflow: hidden;
-    }
-    .stat {
-      padding: 12px 14px;
-      min-height: 68px;
       background: #fff;
+      padding: 12px 14px 10px;
     }
-    .stat .v {
-      font-family: var(--font-mono);
-      font-size: 1.15rem;
+    .summary-block h3 {
+      margin: 0 0 8px;
+      font-size: 0.72rem;
       font-weight: 700;
-      font-variant-numeric: tabular-nums;
-      color: var(--color-ink);
-      letter-spacing: -0.03em;
-    }
-    .stat .l {
-      margin-top: 2px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
       color: var(--color-muted);
-      font-size: 0.76rem;
     }
-    .stat.crit .v { color: var(--color-crit); }
-    .stat.warn .v { color: var(--color-warn); }
-    .stat.ok .v { color: var(--color-ok); }
+    .summary-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      width: 100%;
+      padding: 6px 0;
+      border: 0;
+      border-bottom: 1px dashed var(--color-line);
+      background: transparent;
+      color: var(--color-text);
+      font: inherit;
+      text-align: left;
+    }
+    .summary-row:last-child { border-bottom: 0; }
+    .summary-row span { color: var(--color-text); font-size: 0.9rem; }
+    .summary-row strong {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+      font-size: 0.95rem;
+      color: var(--color-ink);
+      white-space: nowrap;
+    }
+    .summary-row.main span { font-weight: 600; color: var(--color-ink); }
+    .summary-row.main strong { font-size: 1.05rem; }
+    .summary-row.sub { padding-left: 14px; }
+    .summary-row.sub span { color: var(--color-muted); font-size: 0.86rem; }
+    .summary-row.muted span { color: var(--color-secondary); }
+    .summary-row.odo-total {
+      margin-top: 4px;
+      border-top: 1px solid var(--color-line);
+      border-bottom: 0;
+      padding-top: 10px;
+    }
+    .summary-row.odo-total strong { color: var(--color-ink); }
+    .summary-row.clickable {
+      cursor: pointer;
+      border-radius: 4px;
+      margin: 0 -4px;
+      padding-left: 4px;
+      padding-right: 4px;
+      transition: background 0.15s ease;
+    }
+    .summary-row.clickable:hover { background: var(--color-soft); }
+    .summary-row.clickable:focus-visible { outline: none; box-shadow: var(--focus); }
+    .summary-row.clickable.crit strong { color: var(--color-crit); }
+    .summary-row.clickable.warn strong { color: var(--color-warn); }
+    .summary-row.clickable.active {
+      background: #fff7ed;
+      box-shadow: inset 3px 0 0 var(--color-cta);
+    }
 
     .tabs {
       display: flex;
@@ -427,7 +470,6 @@
 
     @media (max-width: 720px) {
       .panel { padding: 16px; }
-      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
   </style>
 </head>
@@ -486,7 +528,7 @@
 
     <section class="panel hidden reveal" id="results" aria-live="polite">
       <h2 class="section-label">Сводка · риски</h2>
-      <div class="stats" id="stats"></div>
+      <div id="stats"></div>
       <div class="tabs" role="tablist" aria-label="Разрезы отчёта">
         <button type="button" class="active" data-tab="companies" role="tab" aria-selected="true">Все</button>
         <button type="button" data-tab="risks" role="tab" aria-selected="false">Критично</button>
@@ -501,8 +543,10 @@
       </div>
       <footer class="note">
         <code>ВВ</code> — max одного договора.
-        <code>ОДО</code> — сумма остатков по конкурентным договорам.
-        Расхождение остатка с реестром &gt; 5% или &gt; 1 млн ₽ → ручная проверка.
+        <code>ОДО</code> — сумма остатков по 44/223/615 и иным конкурентным.
+        Приостановка: дата заключения договора в периоде приостановки (колонки «Дата приостановления» / «Дата возобновления»).
+        Расхождение остатка с реестром &gt; 5% или &gt; 1 млн ₽ → ручная проверка (ЕРЧ).
+        Клик по строке сводки фильтрует таблицу.
       </footer>
     </section>
   </div>
