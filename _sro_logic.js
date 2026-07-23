@@ -179,9 +179,17 @@
       return true;
     }
 
+    function collectHeaders(rows) {
+      const keys = new Set();
+      for (const row of rows) {
+        Object.keys(row).forEach((k) => keys.add(k));
+      }
+      return [...keys];
+    }
+
     function mapMembers(rows) {
       if (!rows.length) throw new Error("Реестр членов СРО пуст.");
-      const headers = Object.keys(rows[0]);
+      const headers = collectHeaders(rows);
       const cols = {
         inn: findCol(headers, ["инн", "inn"]),
         name: findCol(headers, ["контрагент", "наименование", "организация", "член сро", "название"]),
@@ -228,7 +236,7 @@
 
     function mapContracts(rows) {
       if (!rows.length) throw new Error("Реестр договоров пуст.");
-      const headers = Object.keys(rows[0]);
+      const headers = collectHeaders(rows);
       const cols = {
         inn: findCol(headers, ["инн", "инн подрядчика", "инн участника", "inn"]),
         name: findCol(headers, ["контрагент", "подрядчик", "участник", "наименование", "компания"]),
@@ -392,7 +400,7 @@
             flags.noOdo = true;
             odoCheck = "нет ОДО";
             if (rightStopped) {
-              comments.push("нет ОДО при договорах ОДО; право приостановлено");
+              comments.push("нет ОДО при договорах ОДО (акцент: право приостановлено)");
             } else {
               comments.push("есть конкурентные договоры, ОДО отсутствует");
             }
