@@ -53,14 +53,46 @@
         .replace(/[^a-zа-я0-9]+/gi, "");
     }
 
+    /**
+     * Подбор колонки по алиасам.
+     * 1) точное совпадение нормализованного имени (по порядку алиасов);
+     * 2) includes — максимальная доля aliasLen/headerLen (и более ранний алиас при равенстве),
+     *    чтобы «контрагент» не цеплял «…обязательствах контрагента».
+     * Короткие алиасы (< 4 символов после нормализации) — только exact.
+     */
     function findCol(headers, aliases) {
       const normalized = headers.map((h) => ({ raw: h, n: normKey(h) }));
       for (const alias of aliases) {
         const a = normKey(alias);
-        const hit = normalized.find((h) => h.n === a || h.n.includes(a));
-        if (hit) return hit.raw;
+        if (!a) continue;
+        const exact = normalized.find((h) => h.n === a);
+        if (exact) return exact.raw;
       }
-      return null;
+      let best = null;
+      let bestScore = -1;
+      let bestAliasOrder = Infinity;
+      aliases.forEach((alias, aliasIdx) => {
+        const a = normKey(alias);
+        if (!a || a.length < 4) return;
+        for (const h of normalized) {
+          if (!h.n.includes(a)) continue;
+          const score = a.length / h.n.length;
+          if (score > bestScore || (Math.abs(score - bestScore) < 1e-9 && aliasIdx < bestAliasOrder)) {
+            bestScore = score;
+            best = h.raw;
+            bestAliasOrder = aliasIdx;
+          }
+        }
+      });
+      return bestScore >= 0.35 ? best : null;
+    }
+
+    function isYesFlag(v) {
+      const s = String(v ?? "")
+        .toLowerCase()
+        .replace(/ё/g, "е")
+        .trim();
+      return ["1", "true", "да", "yes", "y", "+"].includes(s);
     }
 
     function normalizeInn(v) {
@@ -192,11 +224,23 @@
       const headers = collectHeaders(rows);
       const cols = {
         inn: findCol(headers, ["инн", "inn"]),
-        name: findCol(headers, ["контрагент", "наименование", "организация", "член сро", "название"]),
+        name: findCol(headers, [
+          "контрагент",
+          "наименование",
+          "организация",
+          "член сро",
+          "сокращенное наименование",
+          "название",
+        ]),
         right: findCol(headers, ["состояние права", "статус права", "право"]),
-        vv: findCol(headers, ["уровень вв", "лимит вв", "вв"]),
-        odo: findCol(headers, ["уровень одо", "лимит одо", "одо"]),
-        oblig: findCol(headers, ["расчет обязательств", "расчёт обязательств", "обязательства"]),
+        vv: findCol(headers, ["уровень вв", "лимит вв", "уровень ответственности вв", "вв"]),
+        odo: findCol(headers, ["уровень одо", "лимит одо", "уровень ответственности одо"]),
+        oblig: findCol(headers, [
+          "расчет обязательств",
+          "расчёт обязательств",
+          "расчет размера обязательств",
+          "обязательства",
+        ]),
         suspFrom: findCol(headers, [
           "дата приостановления",
           "дата начала приостановки",
@@ -238,26 +282,50 @@
       if (!rows.length) throw new Error("Реестр договоров пуст.");
       const headers = collectHeaders(rows);
       const cols = {
-        inn: findCol(headers, ["инн", "инн подрядчика", "инн участника", "inn"]),
-        name: findCol(headers, ["контрагент", "подрядчик", "участник", "наименование", "компания"]),
+        inn: findCol(headers, ["инн подрядчика", "инн участника", "инн поставщика", "инн", "inn"]),
+        name: findCol(headers, [
+          "член сро поставщик",
+          "член сро",
+          "подрядчик",
+          "контрагент",
+          "участник",
+          "наименование",
+          "компания",
+        ]),
         amount: findCol(headers, [
           "стоимость принятая сро к учету",
           "стоимость принятая сро к учёту",
           "стоимость к учету",
           "стоимость к учёту",
+          "стоимость работ по договору",
           "сумма договора",
+          "стоимость работ",
           "стоимость",
         ]),
         done: findCol(headers, [
+          "сумма принятых работ по договору",
+          "стоимость принятых работ по договору",
+          "сумма принятых работ",
           "стоимость принятых работ",
+          "принятых работ",
+          "стоимость исполненных работ",
+          "стоимость исполненных",
           "исполнено",
           "принято",
-          "стоимость исполненных",
         ]),
-        method: findCol(headers, ["вид закупки", "способ закупки", "закон", "фз", "тип закупки"]),
-        odoFlag: findCol(headers, ["договор одо", "признак одо", "одо"]),
-        number: findCol(headers, ["номер договора", "№ договора", "номер"]),
-        date: findCol(headers, ["дата договора", "дата заключения", "дата"]),
+        method: findCol(headers, ["вид закупки", "способ закупки", "тип закупки", "закон"]),
+        odoFlag: findCol(headers, ["договор одо", "признак одо"]),
+        number: findCol(headers, ["номер договора", "№ договора"]),
+        date: findCol(headers, [
+          "дата заключения договора",
+          "дата заключения",
+          "дата договора",
+        ]),
+        exclude: findCol(headers, [
+          "не учитывать договор в обязательствах контрагента",
+          "не учитывать договор в обязательствах",
+          "не учитывать договор",
+        ]),
       };
       if (!cols.inn) throw new Error("В реестре договоров не найдена колонка ИНН.");
       if (!cols.amount) throw new Error("В реестре договоров не найдена колонка стоимости.");
@@ -266,6 +334,7 @@
       for (const row of rows) {
         const inn = normalizeInn(row[cols.inn]);
         if (!inn) continue;
+        const excluded = cols.exclude ? isYesFlag(row[cols.exclude]) : false;
         const amount = parseMoney(row[cols.amount]);
         const done = cols.done ? parseMoney(row[cols.done]) : 0;
         const weirdMoney = amount === null;
@@ -291,6 +360,7 @@
           unclear,
           weirdMoney,
           assumptionNoDone: !cols.done,
+          excluded,
           inSuspensionPeriod: false,
         });
       }
@@ -327,13 +397,16 @@
           notFound: false,
         };
 
-        const maxContract = list.reduce((mx, c) => {
+        const counted = list.filter((c) => !c.excluded);
+        const excludedCount = list.length - counted.length;
+
+        const maxContract = counted.reduce((mx, c) => {
           if (c.amount === null) return mx;
           return Math.max(mx, c.amount);
         }, 0);
 
-        const competitive = list.filter((c) => c.competitive);
-        const unclear = list.filter((c) => c.unclear);
+        const competitive = counted.filter((c) => c.competitive);
+        const unclear = counted.filter((c) => c.unclear);
         const odoResidual = competitive.reduce((s, c) => s + (c.residual || 0), 0);
 
         const found = !!m;
@@ -354,7 +427,7 @@
         // Договоры в период приостановки
         let contractsInSuspension = [];
         if (m && (suspFrom || suspTo)) {
-          for (const c of list) {
+          for (const c of counted) {
             if (dateInSuspension(c.dateObj, suspFrom, suspTo)) {
               c.inSuspensionPeriod = true;
               contractsInSuspension.push(c);
@@ -420,12 +493,16 @@
           if (risk !== "КРИТИЧНО") risk = "РУЧНАЯ ПРОВЕРКА";
           comments.push(`без способа закупки: ${unclear.length}`);
         }
-        if (list.some((c) => c.weirdMoney)) {
+        if (counted.some((c) => c.weirdMoney)) {
           if (risk !== "КРИТИЧНО") risk = "РУЧНАЯ ПРОВЕРКА";
           comments.push("странный формат суммы");
         }
-        if (list.some((c) => c.assumptionNoDone)) {
+        if (counted.some((c) => c.assumptionNoDone)) {
+          if (risk !== "КРИТИЧНО") risk = "РУЧНАЯ ПРОВЕРКА";
           comments.push("исполнение не найдено — остаток = полная стоимость");
+        }
+        if (excludedCount > 0) {
+          comments.push(`исключено из обязательств: ${excludedCount}`);
         }
         // Сравниваем остаток ОДО с реестром только если есть конкурентные договоры
         if (found && competitive.length > 0 && diverges(odoResidual, registryOblig)) {
@@ -448,8 +525,9 @@
           odoResidual,
           registryOblig,
           odoCheck,
-          contractsCount: list.length,
+          contractsCount: counted.length,
           competitiveCount: competitive.length,
+          excludedCount,
           contractsInSuspensionCount: contractsInSuspension.length,
           suspFrom,
           suspTo,
@@ -464,9 +542,12 @@
         return order[a.risk] - order[b.risk] || b.maxContract - a.maxContract;
       });
 
-      const byType = (t) => contracts.list.filter((c) => c.methodType === t).length;
+      const byType = (t) =>
+        contracts.list.filter((c) => !c.excluded && c.methodType === t).length;
       const summary = {
-        contracts: contracts.list.length,
+        contracts: contracts.list.filter((c) => !c.excluded).length,
+        contractsRaw: contracts.list.length,
+        excludedContracts: contracts.list.filter((c) => c.excluded).length,
         byFz44: byType("44"),
         byFz223: byType("223"),
         byFz615: byType("615"),
@@ -484,8 +565,23 @@
         critical: companies.filter((c) => c.risk === "КРИТИЧНО").length,
         manual: companies.filter((c) => c.risk === "РУЧНАЯ ПРОВЕРКА").length,
         ok: companies.filter((c) => c.risk === "НОРМА").length,
-        sumAccepted: contracts.list.reduce((s, c) => s + (c.amount || 0), 0),
+        sumAccepted: contracts.list
+          .filter((c) => !c.excluded)
+          .reduce((s, c) => s + (c.amount || 0), 0),
         odoResidualTotal: companies.reduce((s, c) => s + (c.odoResidual || 0), 0),
+        assumptionNoDone: !contracts.cols.done,
+        mapped: {
+          amount: contracts.cols.amount,
+          done: contracts.cols.done,
+          date: contracts.cols.date,
+          number: contracts.cols.number,
+          name: contracts.cols.name,
+          method: contracts.cols.method,
+          exclude: contracts.cols.exclude,
+          memberVv: members.cols.vv,
+          memberOdo: members.cols.odo,
+          memberOblig: members.cols.oblig,
+        },
       };
 
       return {
@@ -522,8 +618,45 @@
       return r.companies;
     }
 
+    function renderMapBanner(summary) {
+      const box = document.getElementById("mapWarn");
+      if (!box) return;
+      const m = summary.mapped || {};
+      const lines = [];
+      if (summary.assumptionNoDone) {
+        lines.push(
+          "Колонка исполнения не найдена — остаток ОДО = полная стоимость договора. Проверьте, что в файле есть «Сумма/стоимость принятых работ»."
+        );
+      }
+      if (!m.date) {
+        lines.push("Дата договора не распознана — проверка приостановки по датам недоступна.");
+      }
+      const mapBits = [
+        m.amount ? `стоимость: «${m.amount}»` : null,
+        m.done ? `исполнено: «${m.done}»` : "исполнено: не найдено",
+        m.date ? `дата: «${m.date}»` : null,
+      ].filter(Boolean);
+      if (mapBits.length) {
+        lines.push("Колонки договоров: " + mapBits.join(" · "));
+      }
+      if (summary.excludedContracts > 0) {
+        lines.push(
+          `Исключено из обязательств по флагу: ${summary.excludedContracts} дог.`
+        );
+      }
+      if (!lines.length) {
+        box.style.display = "none";
+        box.textContent = "";
+        return;
+      }
+      box.style.display = "block";
+      box.className = summary.assumptionNoDone ? "map-warn danger" : "map-warn";
+      box.textContent = lines.join(" ");
+    }
+
     function renderStats(summary) {
       const s = summary;
+      renderMapBanner(s);
       document.getElementById("stats").innerHTML = `
         <div class="summary-grid">
           <div class="summary-block">
@@ -541,6 +674,11 @@
             ${
               s.byUnclear
                 ? `<div class="summary-row sub muted"><span>без вида закупки</span><strong>${s.byUnclear}</strong></div>`
+                : ""
+            }
+            ${
+              s.excludedContracts
+                ? `<div class="summary-row sub muted"><span>исключены из обязательств</span><strong>${s.excludedContracts}</strong></div>`
                 : ""
             }
           </div>
@@ -598,6 +736,7 @@
           "Остаток",
           "Закупка",
           "Тип",
+          "Исключён",
           "Приостановка",
         ];
         rows = r.contracts.map((c) => [
@@ -607,7 +746,7 @@
           c.date || "—",
           fmtMoney(c.amount),
           fmtMoney(c.done),
-          fmtMoney(c.residual),
+          c.excluded ? "—" : fmtMoney(c.residual),
           c.method || "—",
           c.methodType === "44"
             ? "44-ФЗ"
@@ -620,6 +759,7 @@
                   : c.methodType === "other_comp"
                     ? "конкур."
                     : "неясно",
+          c.excluded ? "да" : "—",
           c.inSuspensionPeriod ? "в периоде" : "—",
         ]);
       } else {
@@ -794,6 +934,7 @@
         c.odoCheck,
         c.contractsCount,
         c.competitiveCount,
+        c.excludedCount || 0,
         c.contractsInSuspensionCount || 0,
         c.risk,
         c.comment || "",
@@ -816,14 +957,15 @@
       "Проверка ОДО",
       "Кол-во договоров",
       "Кол-во конкурентных",
+      "Исключено из обязательств",
       "Договоров в периоде приостановки",
       "Итоговый риск",
       "Комментарий",
     ];
 
-    const COMPANY_WIDTHS = [12, 28, 12, 16, 18, 14, 16, 12, 18, 14, 18, 18, 14, 10, 10, 12, 16, 42];
+    const COMPANY_WIDTHS = [12, 28, 12, 16, 18, 14, 16, 12, 18, 14, 18, 18, 14, 10, 10, 12, 12, 16, 42];
     const COMPANY_MONEY = [5, 6, 9, 10, 11];
-    const COMPANY_RISK_COL = 16;
+    const COMPANY_RISK_COL = 17;
 
     function exportExcel() {
       const r = state.result;
@@ -880,6 +1022,7 @@
           "Тип",
           "Конкурентный",
           "Участвует в ОДО",
+          "Исключён из обязательств",
           "В периоде приостановки",
           "Комментарий",
         ],
@@ -899,6 +1042,7 @@
           const notes = [];
           if (c.weirdMoney) notes.push("странный формат суммы");
           if (c.assumptionNoDone) notes.push("исполнение не найдено");
+          if (c.excluded) notes.push("не учитывать в обязательствах");
           if (c.inSuspensionPeriod) notes.push("дата в периоде приостановки");
           return [
             c.inn,
@@ -907,11 +1051,12 @@
             c.date || "",
             c.amount == null ? "" : c.amount,
             c.done,
-            c.residual == null ? "" : c.residual,
+            c.excluded || c.residual == null ? "" : c.residual,
             c.method || "",
             typeLabel,
             c.unclear ? "неясно" : c.competitive ? "да" : "нет",
-            c.competitive ? "да" : "нет",
+            c.excluded ? "нет" : c.competitive ? "да" : "нет",
+            c.excluded ? "да" : "нет",
             c.inSuspensionPeriod ? "да" : "нет",
             notes.join("; "),
           ];
@@ -960,7 +1105,7 @@
       });
       const wsContracts = styleSheet(XLSX.utils.aoa_to_sheet(contractsAoA), {
         headerRows: 1,
-        widths: [12, 28, 14, 12, 16, 14, 14, 16, 14, 12, 12, 12, 36],
+        widths: [12, 28, 14, 12, 16, 14, 14, 16, 14, 12, 12, 12, 12, 36],
         moneyCols: [4, 5, 6],
         autofilter: true,
       });

@@ -286,6 +286,22 @@
       color: var(--color-crit);
       border: 1px solid #fecaca;
     }
+    .map-warn {
+      display: none;
+      margin: 0 0 14px;
+      padding: 10px 12px;
+      border-radius: var(--radius);
+      background: var(--color-warn-bg, #fffbeb);
+      color: var(--color-warn);
+      border: 1px solid #fde68a;
+      font-size: 0.88rem;
+      line-height: 1.45;
+    }
+    .map-warn.danger {
+      background: var(--color-crit-bg);
+      color: var(--color-crit);
+      border-color: #fecaca;
+    }
 
     /* Summary — structured report (contracts + member risks) */
     .summary-grid {
@@ -528,6 +544,7 @@
 
     <section class="panel hidden reveal" id="results" aria-live="polite">
       <h2 class="section-label">Сводка · риски</h2>
+      <div class="map-warn" id="mapWarn" role="status"></div>
       <div id="stats"></div>
       <div class="tabs" role="tablist" aria-label="Разрезы отчёта">
         <button type="button" class="active" data-tab="companies" role="tab" aria-selected="true">Все</button>
@@ -543,8 +560,9 @@
       </div>
       <footer class="note">
         <code>ВВ</code> — max одного договора.
-        <code>ОДО</code> — сумма остатков по 44/223/615 и иным конкурентным.
-        Приостановка: дата заключения договора в периоде приостановки (колонки «Дата приостановления» / «Дата возобновления»).
+        <code>ОДО</code> — сумма остатков (к учёту − исполнено) по 44/223/615 и иным конкурентным.
+        Флаг «Не учитывать договор в обязательствах» исключает договор из ВВ/ОДО.
+        Приостановка: дата заключения договора в периоде приостановки.
         Расхождение остатка с реестром &gt; 5% или &gt; 1 млн ₽ → ручная проверка (ЕРЧ).
         Клик по строке сводки фильтрует таблицу.
       </footer>
