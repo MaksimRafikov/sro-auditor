@@ -211,6 +211,54 @@
       return true;
     }
 
+    function dateInPeriods(contractDate, periods) {
+      if (!contractDate || !periods || !periods.length) return false;
+      return periods.some((p) => dateInSuspension(contractDate, p.from, p.to));
+    }
+
+    /** «30.08.2017 — 13.09.2017; 26.04.2018 — открыто» → несколько периодов. */
+    function parseSuspensionText(text) {
+      const raw = String(text ?? "").trim();
+      if (!raw) return [];
+      const periods = [];
+      for (const chunk of raw.split(/\s*;\s*/)) {
+        const found = [];
+        const re = /(\d{1,2}[./]\d{1,2}[./]\d{2,4})/g;
+        let match;
+        while ((match = re.exec(chunk))) {
+          const d = parseDate(match[1]);
+          if (d) found.push(d);
+        }
+        if (!found.length) continue;
+        const open = /открыт/i.test(chunk);
+        periods.push({ from: found[0], to: open ? null : found[1] || null });
+      }
+      return periods;
+    }
+
+    function sameDay(a, b) {
+      if (!a && !b) return true;
+      if (!a || !b) return false;
+      return a.getTime() === b.getTime();
+    }
+
+    function mergePeriods(list) {
+      const out = [];
+      for (const p of list) {
+        if (!p || !p.from) continue;
+        const dup = out.some((q) => sameDay(q.from, p.from) && sameDay(q.to, p.to));
+        if (!dup) out.push({ from: p.from, to: p.to || null });
+      }
+      out.sort((a, b) => a.from - b.from);
+      return out;
+    }
+
+    function formatPeriods(periods) {
+      return periods
+        .map((p) => `${fmtDate(p.from)} — ${p.to ? fmtDate(p.to) : "открыто"}`)
+        .join("; ");
+    }
+
     function collectHeaders(rows) {
       const keys = new Set();
       for (const row of rows) {
@@ -241,6 +289,19 @@
           "расчет размера обязательств",
           "обязательства",
         ]),
+        obligDate: findCol(headers, [
+          "дата расчета размера обязательств",
+          "дата расчёта размера обязательств",
+          "дата расчета обязательств",
+          "дата расчёта обязательств",
+        ]),
+        regDate: findCol(headers, [
+          "дата регистрации в реестре сро",
+          "дата регистрации в реестре",
+          "дата вступления в сро",
+          "дата вступления",
+          "дата приема в члены",
+        ]),
         suspFrom: findCol(headers, [
           "дата приостановления",
           "дата начала приостановки",
@@ -255,8 +316,14 @@
           "окончание приостановки",
           "возобновлено",
         ]),
+        suspPeriods: findCol(headers, [
+          "периоды приостановок",
+          "периоды приостановки",
+          "история приостановок",
+        ]),
       };
       if (!cols.inn) throw new Error("В реестре членов не найдена колонка ИНН.");
+      if (cols.oblig && normKey(cols.oblig).includes("дата")) cols.oblig = null;
       const byInn = new Map();
       for (const row of rows) {
         const inn = normalizeInn(row[cols.inn]);
@@ -270,8 +337,16 @@
           vvLimit: cols.vv ? parseLimit(row[cols.vv]) : null,
           odoLimit: cols.odo ? parseLimit(row[cols.odo]) : null,
           registryOblig: cols.oblig ? parseMoney(row[cols.oblig]) : null,
+          obligDate: cols.obligDate ? parseDate(row[cols.obligDate]) : null,
+          regDate: cols.regDate ? parseDate(row[cols.regDate]) : null,
           suspFrom: cols.suspFrom ? parseDate(row[cols.suspFrom]) : null,
           suspTo: cols.suspTo ? parseDate(row[cols.suspTo]) : null,
+          periods: mergePeriods([
+            ...(cols.suspFrom && parseDate(row[cols.suspFrom])
+              ? [{ from: parseDate(row[cols.suspFrom]), to: cols.suspTo ? parseDate(row[cols.suspTo]) : null }]
+              : []),
+            ...(cols.suspPeriods ? parseSuspensionText(row[cols.suspPeriods]) : []),
+          ]),
           _cols: cols,
         });
       }
@@ -362,6 +437,8 @@
           assumptionNoDone: !cols.done,
           excluded,
           inSuspensionPeriod: false,
+          beforeMembership: false,
+          membershipRegDate: null,
         });
       }
       return { list, cols };
@@ -393,47 +470,69 @@
           noOdo: false,
           vvExceed: false,
           suspended: false,
+          vvExceedSusp: false,
+          odoExceedSusp: false,
           odoMismatch: false,
           notFound: false,
         };
 
         const counted = list.filter((c) => !c.excluded);
         const excludedCount = list.length - counted.length;
+        const found = !!m;
+        const regDate = m ? m.regDate : null;
+        for (const c of list) {
+          const before = !!(regDate && c.dateObj && c.dateObj < regDate);
+          c.beforeMembership = before;
+          c.membershipRegDate = before ? regDate : null;
+        }
+        const beforeMembershipList = list.filter((c) => c.beforeMembership);
+        // В лимиты входят договоры с даты регистрации. Более ранние остаются в отчёте как основание:
+        // на дату заключения членства в реестре не было.
+        const inScope = counted.filter((c) => !c.beforeMembership);
 
-        const maxContract = counted.reduce((mx, c) => {
+        const maxContract = inScope.reduce((mx, c) => {
           if (c.amount === null) return mx;
           return Math.max(mx, c.amount);
         }, 0);
 
-        const competitive = counted.filter((c) => c.competitive);
-        const unclear = counted.filter((c) => c.unclear);
+        const competitive = inScope.filter((c) => c.competitive);
+        const unclear = inScope.filter((c) => c.unclear);
         const odoResidual = competitive.reduce((s, c) => s + (c.residual || 0), 0);
 
-        const found = !!m;
         const right = m ? m.right : "не найдено";
         const vvLimit = m ? m.vvLimit : null;
         const odoLimit = m ? m.odoLimit : null;
         const vvText = m ? m.vvText : "";
         const odoText = m ? m.odoText : "";
         const registryOblig = m ? m.registryOblig : null;
-        const suspFrom = m ? m.suspFrom : null;
-        const suspTo = m ? m.suspTo : null;
+        const obligDate = m ? m.obligDate : null;
+        const periods = m ? m.periods : [];
         const name = (m && m.name) || list.find((c) => c.name)?.name || "";
         const rightStopped = right === "приостановлено" || right === "прекращено";
+        const lawContracts = inScope.filter(
+          (c) => c.methodType === "44" || c.methodType === "223" || c.methodType === "615"
+        );
 
         let vvCheck = "н/д";
         let odoCheck = "н/д";
+        let vvCheckSusp = "н/д";
+        let odoCheckSusp = "н/д";
 
-        // Договоры в период приостановки
         let contractsInSuspension = [];
-        if (m && (suspFrom || suspTo)) {
-          for (const c of counted) {
-            if (dateInSuspension(c.dateObj, suspFrom, suspTo)) {
+        if (periods.length) {
+          for (const c of inScope) {
+            if (dateInPeriods(c.dateObj, periods)) {
               c.inSuspensionPeriod = true;
               contractsInSuspension.push(c);
             }
           }
         }
+        const suspCompetitive = contractsInSuspension.filter((c) => c.competitive);
+        const maxInSuspension = contractsInSuspension.reduce((mx, c) => {
+          if (c.amount === null) return mx;
+          return Math.max(mx, c.amount);
+        }, 0);
+        const odoResidualSusp = suspCompetitive.reduce((s, c) => s + (c.residual || 0), 0);
 
         if (!found) {
           risk = "КРИТИЧНО";
@@ -441,18 +540,38 @@
           comments.push("не найдена в реестре СРО");
         }
 
-        // Приостановление: договоры в периоде — приоритет; иначе статус права
+        // 4. Договоры, заключённые внутри любого периода приостановки.
+        // Статус права без таких договоров остаётся критичным, но в счётчик 4 не входит.
         if (contractsInSuspension.length > 0) {
           risk = "КРИТИЧНО";
           flags.suspended = true;
-          const period =
-            (suspFrom ? fmtDate(suspFrom) : "…") + " — " + (suspTo ? fmtDate(suspTo) : "…");
           comments.push(
-            `договор(ы) в период приостановки (${period}): ${contractsInSuspension.length}`
+            `договоры в период приостановки (${formatPeriods(periods)}): ${contractsInSuspension.length}`
           );
+          if (found && vvLimit !== null && Number.isFinite(vvLimit)) {
+            if (maxInSuspension > vvLimit) {
+              flags.vvExceedSusp = true;
+              vvCheckSusp = "превышение";
+              comments.push("превышение ВВ в период приостановки");
+            } else {
+              vvCheckSusp = "ок";
+            }
+          } else if (found && vvLimit === INF) {
+            vvCheckSusp = "ок";
+          }
+          if (suspCompetitive.length > 0 && found && odoLimit !== null && Number.isFinite(odoLimit)) {
+            if (odoResidualSusp > odoLimit) {
+              flags.odoExceedSusp = true;
+              odoCheckSusp = "превышение";
+              comments.push("превышение ОДО в период приостановки");
+            } else {
+              odoCheckSusp = "ок";
+            }
+          } else if (suspCompetitive.length > 0 && found && odoLimit === INF) {
+            odoCheckSusp = "ок";
+          }
         } else if (found && rightStopped) {
           risk = "КРИТИЧНО";
-          flags.suspended = true;
           comments.push(`право: ${right}`);
         }
 
@@ -469,13 +588,14 @@
 
         if (competitive.length > 0) {
           if (!found || odoLimit === null) {
-            risk = "КРИТИЧНО";
-            flags.noOdo = true;
-            odoCheck = "нет ОДО";
-            if (rightStopped) {
-              comments.push("нет ОДО при договорах ОДО (акцент: право приостановлено)");
+            if (lawContracts.length > 0) {
+              risk = "КРИТИЧНО";
+              flags.noOdo = true;
+              odoCheck = "нет ОДО";
+              comments.push("нет уровня ОДО при договорах 44/223/615");
             } else {
-              comments.push("есть конкурентные договоры, ОДО отсутствует");
+              if (risk !== "КРИТИЧНО") risk = "РУЧНАЯ ПРОВЕРКА";
+              comments.push("конкурентные договоры не 44/223/615, уровень ОДО не указан");
             }
           } else if (Number.isFinite(odoLimit) && odoResidual > odoLimit) {
             risk = "КРИТИЧНО";
@@ -493,22 +613,55 @@
           if (risk !== "КРИТИЧНО") risk = "РУЧНАЯ ПРОВЕРКА";
           comments.push(`без способа закупки: ${unclear.length}`);
         }
-        if (counted.some((c) => c.weirdMoney)) {
+        if (inScope.some((c) => c.weirdMoney) || beforeMembershipList.some((c) => c.weirdMoney)) {
           if (risk !== "КРИТИЧНО") risk = "РУЧНАЯ ПРОВЕРКА";
           comments.push("странный формат суммы");
         }
-        if (counted.some((c) => c.assumptionNoDone)) {
+        if (inScope.some((c) => c.assumptionNoDone) || beforeMembershipList.some((c) => c.assumptionNoDone)) {
           if (risk !== "КРИТИЧНО") risk = "РУЧНАЯ ПРОВЕРКА";
           comments.push("исполнение не найдено — остаток = полная стоимость");
         }
         if (excludedCount > 0) {
           comments.push(`исключено из обязательств: ${excludedCount}`);
         }
-        // Сравниваем остаток ОДО с реестром только если есть конкурентные договоры
-        if (found && competitive.length > 0 && diverges(odoResidual, registryOblig)) {
-          if (risk !== "КРИТИЧНО") risk = "РУЧНАЯ ПРОВЕРКА";
-          flags.odoMismatch = true;
-          comments.push("расхождение остатка ОДО с реестром (пересчёт ЕРЧ)");
+        if (beforeMembershipList.length > 0) {
+          const nums = beforeMembershipList.map((c) => c.number).filter(Boolean);
+          const shown = nums.slice(0, 8).join(", ");
+          const more = nums.length > 8 ? ` и ещё ${nums.length - 8}` : "";
+          comments.push(
+            `до регистрации в реестре СРО (${fmtDate(regDate)}): ${beforeMembershipList.length} дог.` +
+              (shown ? ` № ${shown}${more}` : "") +
+              " — на дату заключения членства нет, в ВВ/ОДО не входят"
+          );
+        }
+        // Сверка ЕРЧ: не раньше даты регистрации и не позже даты расчёта.
+        let odoResidualErch = null;
+        if (found && competitive.length > 0 && registryOblig !== null) {
+          const undated = competitive.filter((c) => !c.dateObj);
+          if (obligDate && undated.length === 0) {
+            const asOf = competitive.filter((c) => c.dateObj <= obligDate);
+            const afterCount = competitive.length - asOf.length;
+            odoResidualErch = asOf.reduce((s, c) => s + (c.residual || 0), 0);
+            if (diverges(odoResidualErch, registryOblig)) {
+              if (risk !== "КРИТИЧНО") risk = "РУЧНАЯ ПРОВЕРКА";
+              flags.odoMismatch = true;
+              comments.push(
+                `расхождение остатка ОДО с реестром на ${fmtDate(obligDate)} (пересчёт ЕРЧ)`
+              );
+            } else if (afterCount > 0 && diverges(odoResidual, registryOblig)) {
+              comments.push(
+                `сверка ЕРЧ на ${fmtDate(obligDate)} сошлась; договоры после этой даты в расчёт реестра не входят`
+              );
+            }
+          } else if (diverges(odoResidual, registryOblig)) {
+            if (risk !== "КРИТИЧНО") risk = "РУЧНАЯ ПРОВЕРКА";
+            flags.odoMismatch = true;
+            comments.push(
+              obligDate && undated.length
+                ? "расхождение остатка ОДО с реестром (пересчёт ЕРЧ); есть договоры без даты, срез на дату расчёта не применён"
+                : "расхождение остатка ОДО с реестром (пересчёт ЕРЧ)"
+            );
+          }
         }
 
         companies.push({
@@ -524,13 +677,19 @@
           odoLimit,
           odoResidual,
           registryOblig,
+          obligDate,
+          regDate,
+          odoResidualErch,
           odoCheck,
           contractsCount: counted.length,
           competitiveCount: competitive.length,
           excludedCount,
+          beforeMembershipCount: beforeMembershipList.length,
           contractsInSuspensionCount: contractsInSuspension.length,
-          suspFrom,
-          suspTo,
+          maxInSuspension: contractsInSuspension.length ? maxInSuspension : null,
+          vvCheckSusp,
+          odoResidualSusp: contractsInSuspension.length ? odoResidualSusp : null,
+          odoCheckSusp,
           risk,
           flags,
           comment: comments.join("; "),
@@ -561,7 +720,11 @@
         noOdo: companies.filter((c) => c.flags.noOdo).length,
         vvExceed: companies.filter((c) => c.flags.vvExceed).length,
         suspended: companies.filter((c) => c.flags.suspended).length,
+        vvExceedSusp: companies.filter((c) => c.flags.vvExceedSusp).length,
+        odoExceedSusp: companies.filter((c) => c.flags.odoExceedSusp).length,
         odoMismatch: companies.filter((c) => c.flags.odoMismatch).length,
+        beforeMembershipCompanies: companies.filter((c) => c.beforeMembershipCount > 0).length,
+        beforeMembershipContracts: contracts.list.filter((c) => c.beforeMembership).length,
         critical: companies.filter((c) => c.risk === "КРИТИЧНО").length,
         manual: companies.filter((c) => c.risk === "РУЧНАЯ ПРОВЕРКА").length,
         ok: companies.filter((c) => c.risk === "НОРМА").length,
@@ -581,6 +744,8 @@
           memberVv: members.cols.vv,
           memberOdo: members.cols.odo,
           memberOblig: members.cols.oblig,
+          memberObligDate: members.cols.obligDate,
+          memberRegDate: members.cols.regDate,
         },
       };
 
@@ -614,7 +779,10 @@
       if (filter === "noOdo") return r.companies.filter((c) => c.flags.noOdo);
       if (filter === "vvExceed") return r.companies.filter((c) => c.flags.vvExceed);
       if (filter === "suspended") return r.companies.filter((c) => c.flags.suspended);
+      if (filter === "vvExceedSusp") return r.companies.filter((c) => c.flags.vvExceedSusp);
+      if (filter === "odoExceedSusp") return r.companies.filter((c) => c.flags.odoExceedSusp);
       if (filter === "odoMismatch") return r.companies.filter((c) => c.flags.odoMismatch);
+      if (filter === "beforeMembership") return r.companies.filter((c) => c.beforeMembershipCount > 0);
       return r.companies;
     }
 
@@ -631,6 +799,16 @@
       if (!m.date) {
         lines.push("Дата договора не распознана — проверка приостановки по датам недоступна.");
       }
+      if (m.memberOblig && !m.memberObligDate) {
+        lines.push(
+          "Дата расчёта обязательств не найдена — сверка ЕРЧ сравнивает остаток по всем договорам с даты регистрации."
+        );
+      }
+      if (!m.memberRegDate) {
+        lines.push(
+          "Дата регистрации в реестре СРО не найдена — договоры до вступления из лимитов не выводятся."
+        );
+      }
       const mapBits = [
         m.amount ? `стоимость: «${m.amount}»` : null,
         m.done ? `исполнено: «${m.done}»` : "исполнено: не найдено",
@@ -640,8 +818,11 @@
         lines.push("Колонки договоров: " + mapBits.join(" · "));
       }
       if (summary.excludedContracts > 0) {
+        lines.push(`Исключено из обязательств по флагу: ${summary.excludedContracts} дог.`);
+      }
+      if (summary.beforeMembershipContracts > 0) {
         lines.push(
-          `Исключено из обязательств по флагу: ${summary.excludedContracts} дог.`
+          `До регистрации в реестре: ${summary.beforeMembershipContracts} дог. На дату заключения членства нет, в лимиты ВВ/ОДО не входят.`
         );
       }
       if (!lines.length) {
@@ -684,20 +865,29 @@
           </div>
           <div class="summary-block">
             <h3>Члены СРО</h3>
-            <button type="button" class="summary-row clickable crit" data-filter="odoExceed">
-              <span>1. Превышен уровень ОДО</span><strong>${s.odoExceed}</strong>
-            </button>
             <button type="button" class="summary-row clickable crit" data-filter="noOdo">
-              <span>2. Нет ОДО (есть договоры ОДО)</span><strong>${s.noOdo}</strong>
+              <span>1. Нет уровня ОДО (есть 44, 223, 615)</span><strong>${s.noOdo}</strong>
             </button>
             <button type="button" class="summary-row clickable crit" data-filter="vvExceed">
-              <span>3. Превышен уровень ВВ</span><strong>${s.vvExceed}</strong>
+              <span>2. Превышен уровень ВВ</span><strong>${s.vvExceed}</strong>
+            </button>
+            <button type="button" class="summary-row clickable crit" data-filter="odoExceed">
+              <span>3. Превышен уровень ОДО</span><strong>${s.odoExceed}</strong>
             </button>
             <button type="button" class="summary-row clickable crit" data-filter="suspended">
-              <span>4. Приостановлен</span><strong>${s.suspended}</strong>
+              <span>4. Договоры во время приостановки</span><strong>${s.suspended}</strong>
+            </button>
+            <button type="button" class="summary-row clickable crit nest" data-filter="vvExceedSusp">
+              <span>4.1. Превышен ВВ в период приостановки</span><strong>${s.vvExceedSusp}</strong>
+            </button>
+            <button type="button" class="summary-row clickable crit nest" data-filter="odoExceedSusp">
+              <span>4.2. Превышен ОДО во время приостановки</span><strong>${s.odoExceedSusp}</strong>
             </button>
             <button type="button" class="summary-row clickable warn" data-filter="odoMismatch">
-              <span>5. Ручная проверка (остаток ОДО ≠ реестр)</span><strong>${s.odoMismatch}</strong>
+              <span>6. Сверка ЕРЧ</span><strong>${s.odoMismatch}</strong>
+            </button>
+            <button type="button" class="summary-row clickable" data-filter="beforeMembership">
+              <span>До регистрации в реестре</span><strong>${s.beforeMembershipCompanies}</strong>
             </button>
             <div class="summary-row main odo-total"><span>Остаток ОДО</span><strong>${fmtMoney(s.odoResidualTotal)}</strong></div>
           </div>
@@ -737,6 +927,7 @@
           "Закупка",
           "Тип",
           "Исключён",
+          "До регистрации",
           "Приостановка",
         ];
         rows = r.contracts.map((c) => [
@@ -760,6 +951,7 @@
                     ? "конкур."
                     : "неясно",
           c.excluded ? "да" : "—",
+          c.beforeMembership ? "да" : "—",
           c.inSuspensionPeriod ? "в периоде" : "—",
         ]);
       } else {
@@ -931,11 +1123,19 @@
         excelLimit(c.odoLimit),
         c.odoResidual || 0,
         c.registryOblig == null ? "" : c.registryOblig,
+        c.obligDate ? fmtDate(c.obligDate) : "",
+        c.odoResidualErch == null ? "" : c.odoResidualErch,
         c.odoCheck,
         c.contractsCount,
         c.competitiveCount,
         c.excludedCount || 0,
         c.contractsInSuspensionCount || 0,
+        c.maxInSuspension == null ? "" : c.maxInSuspension,
+        c.vvCheckSusp || "",
+        c.odoResidualSusp == null ? "" : c.odoResidualSusp,
+        c.odoCheckSusp || "",
+        c.regDate ? fmtDate(c.regDate) : "",
+        c.beforeMembershipCount || 0,
         c.risk,
         c.comment || "",
       ]);
@@ -954,18 +1154,26 @@
       "Лимит ОДО, ₽",
       "Остаток ОДО по договорам, ₽",
       "Расчёт обязательств из реестра, ₽",
+      "Дата расчёта обязательств",
+      "Остаток ОДО на дату расчёта, ₽",
       "Проверка ОДО",
       "Кол-во договоров",
       "Кол-во конкурентных",
       "Исключено из обязательств",
       "Договоров в периоде приостановки",
+      "Макс. договор в приостановке, ₽",
+      "ВВ в приостановке",
+      "Остаток ОДО в приостановке, ₽",
+      "ОДО в приостановке",
+      "Дата регистрации в реестре",
+      "Договоров до регистрации",
       "Итоговый риск",
       "Комментарий",
     ];
 
-    const COMPANY_WIDTHS = [12, 28, 12, 16, 18, 14, 16, 12, 18, 14, 18, 18, 14, 10, 10, 12, 12, 16, 42];
-    const COMPANY_MONEY = [5, 6, 9, 10, 11];
-    const COMPANY_RISK_COL = 17;
+    const COMPANY_WIDTHS = [12, 28, 12, 16, 18, 14, 16, 12, 18, 14, 18, 18, 14, 18, 14, 10, 10, 12, 12, 16, 14, 18, 14, 16, 14, 16, 42];
+    const COMPANY_MONEY = [5, 6, 9, 10, 11, 13, 19, 21];
+    const COMPANY_RISK_COL = 25;
 
     function exportExcel() {
       const r = state.result;
@@ -997,11 +1205,15 @@
         ["Уникальных ИНН", s.inns],
         ["Найдено в реестре", s.found],
         ["Не найдено", s.notFound],
-        ["1. Превышен уровень ОДО", s.odoExceed],
-        ["2. Нет ОДО (есть договоры ОДО)", s.noOdo],
-        ["3. Превышен уровень ВВ", s.vvExceed],
-        ["4. Приостановлен", s.suspended],
-        ["5. Ручная проверка (остаток ОДО ≠ реестр)", s.odoMismatch],
+        ["1. Нет уровня ОДО (есть 44, 223, 615)", s.noOdo],
+        ["2. Превышен уровень ВВ", s.vvExceed],
+        ["3. Превышен уровень ОДО", s.odoExceed],
+        ["4. Договоры во время приостановки", s.suspended],
+        ["4.1. Превышен ВВ в период приостановки", s.vvExceedSusp],
+        ["4.2. Превышен ОДО во время приостановки", s.odoExceedSusp],
+        ["6. Сверка ЕРЧ", s.odoMismatch],
+        ["Договоры до регистрации в реестре", s.beforeMembershipContracts],
+        ["Компаний с договорами до регистрации", s.beforeMembershipCompanies],
         ["Критичные (всего)", s.critical],
         ["Ручная проверка (всего)", s.manual],
         ["Норма", s.ok],
@@ -1023,6 +1235,7 @@
           "Конкурентный",
           "Участвует в ОДО",
           "Исключён из обязательств",
+          "До регистрации в реестре",
           "В периоде приостановки",
           "Комментарий",
         ],
@@ -1043,6 +1256,11 @@
           if (c.weirdMoney) notes.push("странный формат суммы");
           if (c.assumptionNoDone) notes.push("исполнение не найдено");
           if (c.excluded) notes.push("не учитывать в обязательствах");
+          if (c.beforeMembership) {
+            notes.push(
+              `заключён до регистрации в реестре СРО ${fmtDate(c.membershipRegDate)} — на дату заключения членства нет`
+            );
+          }
           if (c.inSuspensionPeriod) notes.push("дата в периоде приостановки");
           return [
             c.inn,
@@ -1055,8 +1273,9 @@
             c.method || "",
             typeLabel,
             c.unclear ? "неясно" : c.competitive ? "да" : "нет",
-            c.excluded ? "нет" : c.competitive ? "да" : "нет",
+            c.excluded || c.beforeMembership ? "нет" : c.competitive ? "да" : "нет",
             c.excluded ? "да" : "нет",
+            c.beforeMembership ? "да" : "нет",
             c.inSuspensionPeriod ? "да" : "нет",
             notes.join("; "),
           ];
@@ -1105,7 +1324,7 @@
       });
       const wsContracts = styleSheet(XLSX.utils.aoa_to_sheet(contractsAoA), {
         headerRows: 1,
-        widths: [12, 28, 14, 12, 16, 14, 14, 16, 14, 12, 12, 12, 12, 36],
+        widths: [12, 28, 14, 12, 16, 14, 14, 16, 14, 12, 14, 12, 16, 12, 52],
         moneyCols: [4, 5, 6],
         autofilter: true,
       });
@@ -1151,7 +1370,8 @@
         "Состояние права": "Действует",
         "Уровень ВВ": "до 500 млн руб.",
         "Уровень ОДО": "до 500 млн руб.",
-        "Расчёт обязательств": 420000000,
+        "Расчёт обязательств": 300000000,
+        "Дата расчёта размера обязательств": "31.01.2025",
       },
       {
         Контрагент: "ООО ГаммаСтрой",
@@ -1174,12 +1394,23 @@
         "Дата возобновления": "",
       },
       {
+        Контрагент: "ООО ДельтаМост",
+        ИНН: "7706789012",
+        "Состояние права": "Приостановлено",
+        "Уровень ВВ": "до 90 млн руб.",
+        "Уровень ОДО": "до 90 млн руб.",
+        "Расчёт обязательств": 240000000,
+        "Периоды приостановок": "01.11.2024 — 15.12.2024; 01.03.2025 — открыто",
+      },
+      {
         Контрагент: "ООО Еpsilon",
         ИНН: "7705678901",
         "Состояние права": "Действует",
         "Уровень ВВ": "до 90 млн руб.",
         "Уровень ОДО": "до 90 млн руб.",
         "Расчёт обязательств": 10000000,
+        "Дата расчёта размера обязательств": "01.04.2025",
+        "Дата регистрации в реестре СРО": "01.01.2025",
       },
     ];
 
@@ -1226,6 +1457,42 @@
         "Номер договора": "K-1",
         "Дата заключения": "01.02.2025",
         "Стоимость, принятая СРО к учёту": 50000000,
+        "Стоимость принятых работ": 0,
+        "Вид закупки": "44-ФЗ",
+      },
+      {
+        Контрагент: "ООО ДельтаМост",
+        ИНН: "7706789012",
+        "Номер договора": "D-0",
+        "Дата заключения": "01.02.2025",
+        "Стоимость, принятая СРО к учёту": 10000000,
+        "Стоимость принятых работ": 0,
+        "Вид закупки": "прямой",
+      },
+      {
+        Контрагент: "ООО ДельтаМост",
+        ИНН: "7706789012",
+        "Номер договора": "D-1",
+        "Дата заключения": "10.11.2024",
+        "Стоимость, принятая СРО к учёту": 40000000,
+        "Стоимость принятых работ": 0,
+        "Вид закупки": "44-ФЗ",
+      },
+      {
+        Контрагент: "ООО ДельтаМост",
+        ИНН: "7706789012",
+        "Номер договора": "D-2",
+        "Дата заключения": "20.04.2025",
+        "Стоимость, принятая СРО к учёту": 200000000,
+        "Стоимость принятых работ": 0,
+        "Вид закупки": "223-ФЗ",
+      },
+      {
+        Контрагент: "ООО Еpsilon",
+        ИНН: "7705678901",
+        "Номер договора": "E-0",
+        "Дата заключения": "15.06.2024",
+        "Стоимость, принятая СРО к учёту": 120000000,
         "Стоимость принятых работ": 0,
         "Вид закупки": "44-ФЗ",
       },
