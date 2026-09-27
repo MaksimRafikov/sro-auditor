@@ -941,7 +941,19 @@
 
     function riskPill(risk) {
       const cls = risk === "КРИТИЧНО" ? "crit" : risk === "РУЧНАЯ ПРОВЕРКА" ? "warn" : "ok";
-      return `<span class="stamp ${cls}">${risk}</span>`;
+      return `<span class="stamp ${cls}">${escHtml(risk)}</span>`;
+    }
+
+    /** Ячейка с уже собранным безопасным HTML (штамп, чекбокс). Остальной текст — через escHtml. */
+    function htmlCell(html) {
+      return { __html: html };
+    }
+
+    function cellToHtml(cell) {
+      if (cell && typeof cell === "object" && Object.prototype.hasOwnProperty.call(cell, "__html")) {
+        return cell.__html;
+      }
+      return escHtml(cell);
     }
 
     /** Тяжесть для очереди «К исполнению»: 0 приостановка/право → 1 ВВ/ОДО → 2 нет в реестре. */
@@ -1379,7 +1391,7 @@
           inn: c.inn,
           reviewed: isReviewed(c.inn),
           cells: [
-            reviewedToggleHtml(c.inn),
+            htmlCell(reviewedToggleHtml(c.inn)),
             c.inn,
             c.name || "—",
             c.riskTypeShort,
@@ -1411,7 +1423,7 @@
         rows = src.map((c) => ({
           inn: c.inn,
           cells: [
-            riskPill(c.risk),
+            htmlCell(riskPill(c.risk)),
             c.inn,
             c.name,
             c.right,
@@ -1453,7 +1465,7 @@
                 if (wrapCols.has(i)) cls.push("cell-wrap");
                 if (state.tab === "queue" && i === 0) cls.push("cell-reviewed");
                 const classStr = cls.length ? ` class="${cls.join(" ")}"` : "";
-                return `<td${classStr}>${cell}</td>`;
+                return `<td${classStr}>${cellToHtml(cell)}</td>`;
               })
               .join("") +
             "</tr>"

@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 import threading
 import webbrowser
 from functools import partial
@@ -148,17 +149,46 @@ class Handler(SimpleHTTPRequestHandler):
         super().log_message(fmt, *args)
 
 
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _is_loopback_host(host: str) -> bool:
+    h = (host or "").strip().lower()
+    if h in _LOOPBACK_HOSTS:
+        return True
+    # IPv6 loopback in brackets: [::1]
+    return h == "[::1]"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Локальный helper СРО-Аудитора")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument(
+        "--allow-lan",
+        action="store_true",
+        help="разрешить --host не только localhost (кэш НОСТРОЙ без auth станет доступен в сети)",
+    )
     args = parser.parse_args()
+
+    if not _is_loopback_host(args.host) and not args.allow_lan:
+        print(
+            f"Отказ: --host {args.host!r} открывает кэш реестра (ИНН) в сеть без пароля.\n"
+            f"Оставьте 127.0.0.1 или добавьте --allow-lan, если это осознанно.",
+            file=sys.stderr,
+        )
+        return 2
 
     url = f"http://{args.host}:{args.port}/sro_checker.html"
     server = ThreadingHTTPServer((args.host, args.port), partial(Handler, directory=str(ROOT)))
     print(f"СРО-Аудитор: {url}")
     print(f"Кэш НОСТРОЙ:  {nostroy.CACHE_ROOT}")
+    if not _is_loopback_host(args.host):
+        print(
+            "ВНИМАНИЕ: helper слушает не только localhost — "
+            "любой в сети может GET /api/nostroy/<id> и забрать кэш членов."
+        )
     print("Ctrl+C — остановить")
     if not args.no_browser:
         threading.Timer(0.6, webbrowser.open, args=(url,)).start()
