@@ -569,6 +569,78 @@
       border-color: #fecaca;
     }
 
+    /* Slice meta — SRO + export / check dates above summary counts */
+    .slice-meta {
+      margin: 0 0 14px;
+      padding: 12px 14px;
+      border: 1px solid var(--color-line);
+      border-radius: var(--radius-outer);
+      background: #fff;
+      box-shadow: var(--shadow-sm);
+    }
+    .slice-meta-sro {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 6px 10px;
+      margin: 0 0 8px;
+    }
+    .slice-meta-id {
+      font-family: var(--font-mono);
+      font-size: 0.95rem;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      color: var(--color-ink);
+      letter-spacing: 0.02em;
+    }
+    .slice-meta-name {
+      font-size: 0.92rem;
+      font-weight: 600;
+      color: var(--color-ink);
+      line-height: 1.35;
+      text-wrap: pretty;
+    }
+    .slice-meta-name:empty { display: none; }
+    .slice-meta-line {
+      margin: 0 0 10px;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      font-variant-numeric: tabular-nums;
+      color: var(--color-text);
+      letter-spacing: 0.01em;
+    }
+    .slice-meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 8px 14px;
+      margin: 0;
+    }
+    .slice-meta-grid > div { min-width: 0; }
+    .slice-meta-grid dt {
+      font-size: 0.72rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+    }
+    .slice-meta-grid dd {
+      margin: 2px 0 0;
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+      font-size: 0.9rem;
+      color: var(--color-ink);
+    }
+    .slice-meta-grid dd .hint {
+      display: block;
+      margin-top: 2px;
+      font-family: var(--font-body);
+      font-size: 0.72rem;
+      color: var(--color-muted);
+      font-variant-numeric: normal;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     /* Summary — structured report (contracts + member risks) */
     .summary-grid {
       display: grid;
@@ -681,6 +753,89 @@
       background: var(--color-warn);
       border-color: var(--color-warn);
       color: #fff;
+    }
+
+    .queue-tools {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px 16px;
+      margin: 0 0 10px;
+      padding: 8px 12px;
+      background: var(--color-soft);
+      border: 1px solid var(--color-line);
+      border-radius: var(--radius);
+    }
+    .queue-tools[hidden] { display: none; }
+    .queue-filter {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 0.86rem;
+      color: var(--color-ink);
+      user-select: none;
+    }
+    .queue-filter input {
+      width: 16px;
+      height: 16px;
+      accent-color: #1e293b;
+      cursor: pointer;
+    }
+    .queue-progress {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      font-variant-numeric: tabular-nums;
+      color: var(--color-muted);
+      letter-spacing: 0.02em;
+    }
+    .queue-tools .ghost {
+      padding: 6px 12px;
+      font-size: 0.82rem;
+      margin-left: auto;
+    }
+    .cell-reviewed {
+      width: 1%;
+      white-space: nowrap;
+      vertical-align: middle;
+    }
+    .reviewed-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      margin: 0;
+    }
+    .reviewed-toggle input {
+      width: 16px;
+      height: 16px;
+      accent-color: #475569;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .reviewed-toggle input:focus-visible {
+      outline: none;
+      box-shadow: var(--focus);
+    }
+    .stamp.reviewed {
+      color: #475569;
+      background: #f1f5f9;
+      border-color: #64748b;
+    }
+    .stamp.reviewed.is-off {
+      visibility: hidden;
+    }
+    tbody tr.row-reviewed td {
+      background: #f8fafc;
+      color: var(--color-muted);
+    }
+    tbody tr.row-reviewed:hover td,
+    tbody tr.row-reviewed.row-open:hover td,
+    tbody tr.row-reviewed.row-open:hover td:first-child {
+      background: #f1f5f9;
+    }
+    tbody tr.row-reviewed td:first-child {
+      background: #f8fafc;
     }
 
     .table-wrap {
@@ -1160,6 +1315,14 @@
         <button type="button" data-tab="manualIncomplete" data-label="Данные неполные" role="tab" aria-selected="false">Данные неполные</button>
         <button type="button" data-tab="contracts" data-label="Договоры" role="tab" aria-selected="false">Договоры</button>
       </div>
+      <div id="queueTools" class="queue-tools" hidden>
+        <label class="queue-filter">
+          <input type="checkbox" id="hideReviewed" />
+          Скрыть разобранные
+        </label>
+        <span class="queue-progress" id="queueProgress" aria-live="polite"></span>
+        <button type="button" class="ghost" id="resetReviewed">Сбросить отметки</button>
+      </div>
       <div class="table-wrap">
         <table>
           <thead id="thead"></thead>
@@ -1178,7 +1341,10 @@
         Клик по строке сводки фильтрует таблицу («Все»).
         Клик по строке компании / очереди / договора открывает карточку ИНН (лимиты, право, приостановки, договоры, копирование формулировки).
         Вкладка «К исполнению» — только критичные, по тяжести и сумме; тот же список — лист Excel «К исполнению».
+        Отметка «разобрано» на очереди хранится в sessionStorage вкладки (тот же СРО и файл договоров);
+        сброс — при другой проверке или кнопкой «Сбросить отметки».
         «ЕРЧ» и «Данные неполные» — раздельные срезы бывшей «Ручной»; те же списки — листы Excel.
+        Шапка сводки и лист Excel «Сводка» фиксируют срез дат: СРО, выгрузка договоров, выгрузка членов, дата проверки.
       </footer>
     </section>
   </div>

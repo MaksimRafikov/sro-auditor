@@ -1,14 +1,64 @@
 
     const INF = Number.POSITIVE_INFINITY;
+    const REVIEWED_KEY = "sro-auditor:reviewedQueue";
+
+    function reviewFingerprint() {
+      const sro =
+        (state.membersMeta && state.membersMeta.sro_id != null
+          ? String(state.membersMeta.sro_id)
+          : "") ||
+        (typeof sroIdValue === "function" ? sroIdValue() : "") ||
+        "";
+      const contracts = state.contractsFileName || "";
+      const membersSrc = state.membersSource || "";
+      return `${sro}|${membersSrc}|${contracts}`;
+    }
+
+    function loadReviewedState() {
+      try {
+        const raw = sessionStorage.getItem(REVIEWED_KEY);
+        if (!raw) return { fp: "", inns: [] };
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object") return { fp: "", inns: [] };
+        const inns = Array.isArray(parsed.inns) ? parsed.inns.map((x) => String(x)) : [];
+        return { fp: parsed.fp != null ? String(parsed.fp) : "", inns };
+      } catch (_) {
+        return { fp: "", inns: [] };
+      }
+    }
+
+    function persistReviewedState(fp, inns) {
+      try {
+        sessionStorage.setItem(
+          REVIEWED_KEY,
+          JSON.stringify({ fp: fp || "", inns: [...inns] })
+        );
+      } catch (_) {
+        /* quota / private mode — отметки остаются только в памяти */
+      }
+    }
+
     const state = {
       membersRows: null,
       contractsRows: null,
       membersMeta: null,
       membersSource: null,
+      membersFileName: null,
+      contractsFileName: null,
+      checkedAt: null,
       result: null,
       tab: "companies",
       filter: null,
+      reviewedFp: "",
+      reviewedInns: new Set(),
+      hideReviewed: false,
     };
+
+    (function hydrateReviewedFromSession() {
+      const stored = loadReviewedState();
+      state.reviewedFp = stored.fp;
+      state.reviewedInns = new Set(stored.inns);
+    })();
 
     const membersInput = document.getElementById("membersFile");
     const contractsInput = document.getElementById("contractsFile");
@@ -199,6 +249,80 @@
       const dd = String(d.getDate()).padStart(2, "0");
       const mm = String(d.getMonth() + 1).padStart(2, "0");
       return `${dd}.${mm}.${d.getFullYear()}`;
+    }
+
+    /** Дата из имени файла: «…(02.06.2026).xls», «…_02.06.2026», «…2026-06-02…». */
+    function parseDateFromFileName(name) {
+      if (!name) return null;
+      const s = String(name);
+      const paren = s.match(/\((\d{1,2}[./]\d{1,2}[./]\d{2,4})\)/);
+      if (paren) return parseDate(paren[1]);
+      const dmy = s.match(/(?:^|[^\d])(\d{1,2}[./]\d{1,2}[./]\d{2,4})(?:[^\d]|$)/);
+      if (dmy) return parseDate(dmy[1]);
+      const iso = s.match(/(\d{4}-\d{2}-\d{2})/);
+      if (iso) return parseDate(iso[1]);
+      return null;
+    }
+
+    function maxContractDate(contracts) {
+      let max = null;
+      for (const c of contracts || []) {
+        if (c.dateObj && (!max || c.dateObj > max)) max = c.dateObj;
+      }
+      return max;
+    }
+
+    function fmtExportedDateOnly(iso) {
+      if (!iso) return "";
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return "";
+      return fmtDate(startOfDay(d));
+    }
+
+    /** Шапка среза: СРО + даты выгрузок и проверки (UI и лист «Сводка»). */
+    function buildSliceMeta(result) {
+      const meta = state.membersMeta;
+      const sroId =
+        meta && meta.sro_id != null && meta.sro_id !== ""
+          ? String(meta.sro_id)
+          : sroIdValue() || "";
+      const names = sroDisplayName(meta);
+      const sroName = names.full || names.short || "";
+
+      const fromFile = parseDateFromFileName(state.contractsFileName);
+      const fromMax = result ? maxContractDate(result.contracts) : null;
+      const contractsDateObj = fromFile || fromMax;
+      const contractsDateSource = fromFile ? "file" : fromMax ? "max" : "";
+      const contractsDate = contractsDateObj ? fmtDate(contractsDateObj) : "—";
+
+      let membersDate = "—";
+      let membersDateFull = "—";
+      if (meta && meta.exported_at) {
+        membersDate = fmtExportedDateOnly(meta.exported_at) || "—";
+        membersDateFull = fmtExportedAt(meta.exported_at);
+      } else if (state.membersSource === "file" && state.membersFileName) {
+        const d = parseDateFromFileName(state.membersFileName);
+        if (d) {
+          membersDate = fmtDate(d);
+          membersDateFull = membersDate;
+        }
+      }
+
+      const checkAt = state.checkedAt || new Date();
+      const checkDate = fmtDate(startOfDay(checkAt));
+      const line = `договоры ${contractsDate} · члены ${membersDate}`;
+
+      return {
+        sroId,
+        sroName,
+        contractsDate,
+        contractsDateSource,
+        contractsFileName: state.contractsFileName || "",
+        membersDate,
+        membersDateFull,
+        checkDate,
+        line,
+      };
     }
 
     /** Классификация способа закупки: 44 / 223 / 615 / direct / other_comp / unclear */
@@ -1002,7 +1126,45 @@
     function renderStats(summary) {
       const s = summary;
       renderMapBanner(s);
+      const slice = buildSliceMeta(state.result);
+      const sroLabel = slice.sroId ? `СРО ${escHtml(slice.sroId)}` : "СРО —";
+      const contractsHint =
+        slice.contractsDateSource === "file" && slice.contractsFileName
+          ? `<span class="hint" title="${escHtml(slice.contractsFileName)}">${escHtml(slice.contractsFileName)}</span>`
+          : slice.contractsDateSource === "max"
+            ? `<span class="hint">max дата в реестре договоров</span>`
+            : "";
+      const membersHint =
+        state.membersSource === "registry" && slice.membersDateFull !== "—"
+          ? `<span class="hint">НОСТРОЙ · ${escHtml(slice.membersDateFull)}</span>`
+          : state.membersSource === "file" && state.membersFileName
+            ? `<span class="hint" title="${escHtml(state.membersFileName)}">${escHtml(state.membersFileName)}</span>`
+            : state.membersSource === "sample"
+              ? `<span class="hint">демо-данные</span>`
+              : "";
+
       document.getElementById("stats").innerHTML = `
+        <div class="slice-meta" role="group" aria-label="Срез дат проверки">
+          <div class="slice-meta-sro">
+            <span class="slice-meta-id">${sroLabel}</span>
+            <span class="slice-meta-name">${escHtml(slice.sroName)}</span>
+          </div>
+          <p class="slice-meta-line">${escHtml(slice.line)} · проверка ${escHtml(slice.checkDate)}</p>
+          <dl class="slice-meta-grid">
+            <div>
+              <dt>Договоры</dt>
+              <dd>${escHtml(slice.contractsDate)}${contractsHint}</dd>
+            </div>
+            <div>
+              <dt>Члены (реестр)</dt>
+              <dd>${escHtml(slice.membersDate)}${membersHint}</dd>
+            </div>
+            <div>
+              <dt>Проверка</dt>
+              <dd>${escHtml(slice.checkDate)}</dd>
+            </div>
+          </dl>
+        </div>
         <div class="summary-grid">
           <div class="summary-block">
             <h3>Договоры</h3>
@@ -1103,6 +1265,71 @@
       return "неясно";
     }
 
+    function clearReviewedMarks() {
+      state.reviewedInns = new Set();
+      persistReviewedState(state.reviewedFp, state.reviewedInns);
+    }
+
+    /** Сброс отметок при новой проверке (другой СРО/файл) или сохранение при том же срезе (F5). */
+    function syncReviewedForRun() {
+      const fp = reviewFingerprint();
+      if (fp !== state.reviewedFp) {
+        state.reviewedFp = fp;
+        state.reviewedInns = new Set();
+        persistReviewedState(fp, state.reviewedInns);
+        return;
+      }
+      const stored = loadReviewedState();
+      if (stored.fp === fp) {
+        state.reviewedInns = new Set(stored.inns);
+      }
+      persistReviewedState(fp, state.reviewedInns);
+    }
+
+    function isReviewed(inn) {
+      return state.reviewedInns.has(String(inn));
+    }
+
+    function setReviewed(inn, on) {
+      const key = String(inn);
+      if (on) state.reviewedInns.add(key);
+      else state.reviewedInns.delete(key);
+      if (!state.reviewedFp) state.reviewedFp = reviewFingerprint();
+      persistReviewedState(state.reviewedFp, state.reviewedInns);
+    }
+
+    function reviewedToggleHtml(inn) {
+      const on = isReviewed(inn);
+      const stampCls = on ? "stamp reviewed" : "stamp reviewed is-off";
+      return (
+        `<label class="reviewed-toggle" data-reviewed-toggle>` +
+        `<input type="checkbox" data-reviewed-inn="${escHtml(inn)}"${on ? " checked" : ""}` +
+        ` aria-label="Разобрано: ИНН ${escHtml(inn)}" />` +
+        `<span class="${stampCls}" aria-hidden="true">разобрано</span>` +
+        `</label>`
+      );
+    }
+
+    function updateQueueTools(r) {
+      const tools = document.getElementById("queueTools");
+      const progress = document.getElementById("queueProgress");
+      const hideCb = document.getElementById("hideReviewed");
+      if (!tools) return;
+      const onQueue = state.tab === "queue" && !!r;
+      tools.hidden = !onQueue;
+      if (!onQueue) return;
+      if (hideCb) hideCb.checked = !!state.hideReviewed;
+      const total = (r.actionQueue || []).length;
+      const done = (r.actionQueue || []).filter((c) => isReviewed(c.inn)).length;
+      if (progress) {
+        progress.textContent =
+          total === 0
+            ? "очередь пуста"
+            : `разобрано ${done} / ${total}` +
+              (state.hideReviewed && done ? ` · скрыто ${done}` : "");
+      }
+    }
+
     function renderTable() {
       const r = state.result;
       if (!r) return;
@@ -1143,11 +1370,16 @@
         }));
       } else if (state.tab === "queue") {
         const src = r.actionQueue || [];
-        head = ["ИНН", "Компания", "Тип риска", "Max / остаток ОДО", "Что проверить"];
-        wrapCols = new Set([2, 4]);
-        rows = src.map((c) => ({
+        const visible = state.hideReviewed
+          ? src.filter((c) => !isReviewed(c.inn))
+          : src;
+        head = ["Разбор", "ИНН", "Компания", "Тип риска", "Max / остаток ОДО", "Что проверить"];
+        wrapCols = new Set([3, 5]);
+        rows = visible.map((c) => ({
           inn: c.inn,
+          reviewed: isReviewed(c.inn),
           cells: [
+            reviewedToggleHtml(c.inn),
             c.inn,
             c.name || "—",
             c.riskTypeShort,
@@ -1192,27 +1424,44 @@
         }));
       }
       document.getElementById("thead").innerHTML =
-        "<tr>" + head.map((h) => `<th>${h}</th>`).join("") + "</tr>";
+        "<tr>" +
+        head
+          .map((h, i) => {
+            if (state.tab === "queue" && i === 0) {
+              return `<th class="cell-reviewed" scope="col">${h}</th>`;
+            }
+            return `<th>${h}</th>`;
+          })
+          .join("") +
+        "</tr>";
       document.getElementById("tbody").innerHTML = rows
         .map((row) => {
           const innAttr = row.inn ? ` data-inn="${escHtml(row.inn)}"` : "";
-          const openable = row.inn ? ' class="row-open" tabindex="0" role="button"' : "";
+          const classes = [];
+          if (row.inn) classes.push("row-open");
+          if (row.reviewed) classes.push("row-reviewed");
+          const classAttr = classes.length ? ` class="${classes.join(" ")}"` : "";
+          const openable = row.inn ? ' tabindex="0" role="button"' : "";
           const label = row.inn
             ? ` aria-label="Открыть карточку ИНН ${escHtml(row.inn)}"`
             : "";
           return (
-            `<tr${innAttr}${openable}${label}>` +
+            `<tr${innAttr}${classAttr}${openable}${label}>` +
             row.cells
-              .map(
-                (cell, i) =>
-                  `<td${wrapCols.has(i) ? ' class="cell-wrap"' : ""}>${cell}</td>`
-              )
+              .map((cell, i) => {
+                const cls = [];
+                if (wrapCols.has(i)) cls.push("cell-wrap");
+                if (state.tab === "queue" && i === 0) cls.push("cell-reviewed");
+                const classStr = cls.length ? ` class="${cls.join(" ")}"` : "";
+                return `<td${classStr}>${cell}</td>`;
+              })
               .join("") +
             "</tr>"
           );
         })
         .join("");
       updateTabCounts(r);
+      updateQueueTools(r);
     }
 
     function updateTabCounts(r) {
@@ -1429,6 +1678,9 @@
         closeInnCard();
         state.filter = null;
         state.tab = "queue";
+        state.checkedAt = new Date();
+        syncReviewedForRun();
+        state.hideReviewed = false;
         state.result = analyze(state.membersRows, state.contractsRows);
         results.classList.remove("hidden");
         exportBtn.classList.remove("hidden");
@@ -1623,18 +1875,22 @@
       }
 
       const s = r.summary;
-      const today = new Date();
-      const dateStr =
-        String(today.getDate()).padStart(2, "0") +
-        "." +
-        String(today.getMonth() + 1).padStart(2, "0") +
-        "." +
-        today.getFullYear();
+      const slice = buildSliceMeta(r);
+      const today = state.checkedAt || new Date();
+      const dateStr = slice.checkDate;
 
       const meta = state.membersMeta;
+      const contractsDateLabel =
+        slice.contractsDateSource === "max" && slice.contractsDate !== "—"
+          ? `${slice.contractsDate} (max дата в реестре)`
+          : slice.contractsDate;
       const summaryAoA = [
         ["Показатель", "Значение"],
+        ["Номер СРО", slice.sroId || ""],
+        ["Название СРО", slice.sroName || ""],
         ["Дата проверки", dateStr],
+        ["Дата выгрузки договоров", contractsDateLabel],
+        ["Файл договоров", slice.contractsFileName || ""],
         [
           "Источник реестра членов",
           meta
@@ -1643,7 +1899,16 @@
               ? "файл реестра членов"
               : "демо-данные",
         ],
-        ["Дата выгрузки реестра членов", meta ? fmtExportedAt(meta.exported_at) : ""],
+        [
+          "Дата выгрузки реестра членов",
+          meta
+            ? slice.membersDate
+            : state.membersSource === "file"
+              ? slice.membersDate === "—"
+                ? ""
+                : slice.membersDate
+              : "",
+        ],
         ["Членов в реестре", meta ? meta.stats.members : state.membersRows.length],
         ["Всего договоров", s.contracts],
         ["из них по 44-ФЗ", s.byFz44],
@@ -2031,10 +2296,12 @@
     membersInput.addEventListener("change", async (e) => {
       clearError();
       try {
-        state.membersRows = await readTable(e.target.files[0]);
+        const file = e.target.files[0];
+        state.membersRows = await readTable(file);
         state.membersMeta = null;
         state.membersSource = "file";
-        onMembersFromFile(e.target.files[0], state.membersRows.length);
+        state.membersFileName = file ? file.name : null;
+        onMembersFromFile(file, state.membersRows.length);
         updateReady();
       } catch (err) {
         showError("Не удалось прочитать реестр членов: " + err.message);
@@ -2046,6 +2313,7 @@
       const file = e.target.files[0];
       try {
         state.contractsRows = await readTable(file);
+        state.contractsFileName = file ? file.name : null;
         markFilled("contracts", file.name);
         updateReady();
       } catch (err) {
@@ -2060,6 +2328,8 @@
       state.contractsRows = SAMPLE_CONTRACTS;
       state.membersMeta = null;
       state.membersSource = "sample";
+      state.membersFileName = null;
+      state.contractsFileName = "демо · договоры";
       membersInput.value = "";
       contractsInput.value = "";
       markFilled("members", null);
@@ -2084,19 +2354,66 @@
       });
     });
 
+    function updateReviewedRowUi(tr, on) {
+      if (!tr) return;
+      tr.classList.toggle("row-reviewed", on);
+      const input = tr.querySelector("input[data-reviewed-inn]");
+      if (input) input.checked = on;
+      const stamp = tr.querySelector(".stamp.reviewed");
+      if (stamp) stamp.classList.toggle("is-off", !on);
+    }
+
+    function refreshQueueProgressOnly() {
+      const r = state.result;
+      if (!r || state.tab !== "queue") return;
+      updateQueueTools(r);
+    }
+
     const resultsTable = document.querySelector("#results .table-wrap table");
     if (resultsTable) {
       resultsTable.addEventListener("click", (e) => {
+        if (e.target.closest("[data-reviewed-toggle]")) return;
         const tr = e.target.closest("tr[data-inn]");
         if (!tr || !resultsTable.contains(tr)) return;
         openInnCard(tr.dataset.inn);
       });
+      resultsTable.addEventListener("change", (e) => {
+        const input = e.target.closest("input[data-reviewed-inn]");
+        if (!input || !resultsTable.contains(input)) return;
+        const on = input.checked;
+        setReviewed(input.dataset.reviewedInn, on);
+        if (state.hideReviewed) {
+          renderTable();
+          return;
+        }
+        updateReviewedRowUi(input.closest("tr"), on);
+        refreshQueueProgressOnly();
+      });
       resultsTable.addEventListener("keydown", (e) => {
         if (e.key !== "Enter" && e.key !== " ") return;
+        if (e.target.closest("[data-reviewed-toggle]")) return;
         const tr = e.target.closest("tr[data-inn]");
         if (!tr || e.target !== tr) return;
         e.preventDefault();
         openInnCard(tr.dataset.inn);
+      });
+    }
+
+    const hideReviewedCb = document.getElementById("hideReviewed");
+    if (hideReviewedCb) {
+      hideReviewedCb.addEventListener("change", () => {
+        state.hideReviewed = !!hideReviewedCb.checked;
+        if (state.result) renderTable();
+      });
+    }
+    const resetReviewedBtn = document.getElementById("resetReviewed");
+    if (resetReviewedBtn) {
+      resetReviewedBtn.addEventListener("click", () => {
+        clearReviewedMarks();
+        state.hideReviewed = false;
+        const hideCb = document.getElementById("hideReviewed");
+        if (hideCb) hideCb.checked = false;
+        if (state.result) renderTable();
       });
     }
 
@@ -2514,6 +2831,7 @@
       state.membersRows = payload.members;
       state.membersMeta = payload;
       state.membersSource = "registry";
+      state.membersFileName = null;
       membersInput.value = "";
       markFilled("members", null);
       renderSroTitle(payload);
@@ -2709,6 +3027,7 @@
         state.membersRows = null;
         state.membersMeta = null;
         state.membersSource = null;
+        state.membersFileName = null;
         registryMeta.classList.add("hidden");
         hideMembersPreview();
         clearSroTitle();
