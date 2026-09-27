@@ -767,6 +767,27 @@
       border-radius: var(--radius);
     }
     .queue-tools[hidden] { display: none; }
+    .queue-search {
+      flex: 1 1 180px;
+      min-width: 160px;
+      max-width: 280px;
+      height: 34px;
+      padding: 0 10px;
+      border: 1px solid var(--color-line);
+      border-radius: var(--radius);
+      background: var(--color-panel);
+      color: var(--color-ink);
+      font-family: var(--font-body);
+      font-size: 0.86rem;
+    }
+    .queue-search::placeholder {
+      color: var(--color-muted);
+    }
+    .queue-search:focus {
+      outline: none;
+      border-color: var(--color-primary);
+      box-shadow: 0 0 0 3px rgba(100, 116, 139, 0.18);
+    }
     .queue-filter {
       display: inline-flex;
       align-items: center;
@@ -1316,6 +1337,15 @@
         <button type="button" data-tab="contracts" data-label="Договоры" role="tab" aria-selected="false">Договоры</button>
       </div>
       <div id="queueTools" class="queue-tools" hidden>
+        <label class="visually-hidden" for="queueSearch">Поиск в очереди</label>
+        <input
+          type="search"
+          id="queueSearch"
+          class="queue-search"
+          placeholder="ИНН или название"
+          autocomplete="off"
+          enterkeyhint="search"
+        />
         <label class="queue-filter">
           <input type="checkbox" id="hideReviewed" />
           Скрыть разобранные
@@ -1341,8 +1371,9 @@
         Клик по строке сводки фильтрует таблицу («Все»).
         Клик по строке компании / очереди / договора открывает карточку ИНН (лимиты, право, приостановки, договоры, копирование формулировки).
         Вкладка «К исполнению» — только критичные, по тяжести и сумме; тот же список — лист Excel «К исполнению».
-        Отметка «разобрано» на очереди хранится в sessionStorage вкладки (тот же СРО и файл договоров);
-        сброс — при другой проверке или кнопкой «Сбросить отметки».
+        Отметка «разобрано» на очереди хранится в localStorage браузера (тот же СРО и файл договоров — между днями на этом ПК);
+        сброс — кнопкой «Сбросить отметки» или при смене среза отметки другого среза не трогаются.
+        Поиск на «К исполнению» фильтрует по ИНН и названию.
         «ЕРЧ» и «Данные неполные» — раздельные срезы бывшей «Ручной»; те же списки — листы Excel.
         Шапка сводки и лист Excel «Сводка» фиксируют срез дат: СРО, выгрузка договоров, выгрузка членов, дата проверки.
       </footer>

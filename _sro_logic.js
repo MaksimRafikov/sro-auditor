@@ -1,6 +1,8 @@
 
     const INF = Number.POSITIVE_INFINITY;
     const REVIEWED_KEY = "sro-auditor:reviewedQueue";
+    const REVIEWED_KEY_LEGACY_SESSION = "sro-auditor:reviewedQueue";
+    const REVIEWED_MAX_SLICES = 30;
 
     function reviewFingerprint() {
       const sro =
@@ -14,28 +16,115 @@
       return `${sro}|${membersSrc}|${contracts}`;
     }
 
-    function loadReviewedState() {
+    function emptyReviewedStore() {
+      return { version: 2, slices: {} };
+    }
+
+    function normalizeReviewedSlice(entry) {
+      if (!entry || typeof entry !== "object") return null;
+      const inns = Array.isArray(entry.inns)
+        ? entry.inns.map((x) => String(x)).filter(Boolean)
+        : [];
+      const updatedAt =
+        typeof entry.updatedAt === "number" && Number.isFinite(entry.updatedAt)
+          ? entry.updatedAt
+          : Date.now();
+      return { inns, updatedAt };
+    }
+
+    /** v1 {fp,inns} (session/local) → v2 {version,slices}; чужие ключи не трогаем. */
+    function parseReviewedStore(raw) {
+      if (!raw) return emptyReviewedStore();
+      let parsed;
       try {
-        const raw = sessionStorage.getItem(REVIEWED_KEY);
-        if (!raw) return { fp: "", inns: [] };
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== "object") return { fp: "", inns: [] };
-        const inns = Array.isArray(parsed.inns) ? parsed.inns.map((x) => String(x)) : [];
-        return { fp: parsed.fp != null ? String(parsed.fp) : "", inns };
+        parsed = JSON.parse(raw);
       } catch (_) {
-        return { fp: "", inns: [] };
+        return emptyReviewedStore();
+      }
+      if (!parsed || typeof parsed !== "object") return emptyReviewedStore();
+      if (parsed.version === 2 && parsed.slices && typeof parsed.slices === "object") {
+        const slices = {};
+        Object.keys(parsed.slices).forEach((fp) => {
+          const slice = normalizeReviewedSlice(parsed.slices[fp]);
+          if (slice && fp) slices[fp] = slice;
+        });
+        return { version: 2, slices };
+      }
+      if (parsed.fp != null) {
+        const slice = normalizeReviewedSlice({
+          inns: parsed.inns,
+          updatedAt: parsed.updatedAt,
+        });
+        const store = emptyReviewedStore();
+        const fp = String(parsed.fp);
+        if (fp && slice) store.slices[fp] = slice;
+        return store;
+      }
+      return emptyReviewedStore();
+    }
+
+    function readReviewedRaw() {
+      try {
+        const local = localStorage.getItem(REVIEWED_KEY);
+        if (local) return local;
+      } catch (_) {
+        /* private mode */
+      }
+      try {
+        return sessionStorage.getItem(REVIEWED_KEY_LEGACY_SESSION);
+      } catch (_) {
+        return null;
       }
     }
 
-    function persistReviewedState(fp, inns) {
+    function loadReviewedStore() {
+      return parseReviewedStore(readReviewedRaw());
+    }
+
+    function pruneReviewedSlices(slices) {
+      const keys = Object.keys(slices);
+      if (keys.length <= REVIEWED_MAX_SLICES) return slices;
+      keys
+        .sort((a, b) => (slices[a].updatedAt || 0) - (slices[b].updatedAt || 0))
+        .slice(0, keys.length - REVIEWED_MAX_SLICES)
+        .forEach((fp) => {
+          delete slices[fp];
+        });
+      return slices;
+    }
+
+    function saveReviewedStore(store) {
+      const payload = {
+        version: 2,
+        slices: pruneReviewedSlices({ ...store.slices }),
+      };
+      const raw = JSON.stringify(payload);
       try {
-        sessionStorage.setItem(
-          REVIEWED_KEY,
-          JSON.stringify({ fp: fp || "", inns: [...inns] })
-        );
+        localStorage.setItem(REVIEWED_KEY, raw);
       } catch (_) {
         /* quota / private mode — отметки остаются только в памяти */
       }
+      try {
+        sessionStorage.removeItem(REVIEWED_KEY_LEGACY_SESSION);
+      } catch (_) {
+        /* ignore */
+      }
+    }
+
+    function loadReviewedInnsForFp(fp) {
+      if (!fp) return [];
+      const slice = loadReviewedStore().slices[fp];
+      return slice ? slice.inns.slice() : [];
+    }
+
+    function persistReviewedState(fp, inns) {
+      if (!fp) return;
+      const store = loadReviewedStore();
+      store.slices[fp] = {
+        inns: [...inns],
+        updatedAt: Date.now(),
+      };
+      saveReviewedStore(store);
     }
 
     const state = {
@@ -52,14 +141,8 @@
       reviewedFp: "",
       reviewedInns: new Set(),
       hideReviewed: false,
+      queueQuery: "",
     };
-
-    (function hydrateReviewedFromSession() {
-      const stored = loadReviewedState();
-      state.reviewedFp = stored.fp;
-      state.reviewedInns = new Set(stored.inns);
-    })();
-
     const membersInput = document.getElementById("membersFile");
     const contractsInput = document.getElementById("contractsFile");
     const runBtn = document.getElementById("runBtn");
@@ -1279,22 +1362,15 @@
 
     function clearReviewedMarks() {
       state.reviewedInns = new Set();
+      if (!state.reviewedFp) state.reviewedFp = reviewFingerprint();
       persistReviewedState(state.reviewedFp, state.reviewedInns);
     }
 
-    /** Сброс отметок при новой проверке (другой СРО/файл) или сохранение при том же срезе (F5). */
+    /** Подтянуть отметки текущего среза из localStorage (между днями / F5). */
     function syncReviewedForRun() {
       const fp = reviewFingerprint();
-      if (fp !== state.reviewedFp) {
-        state.reviewedFp = fp;
-        state.reviewedInns = new Set();
-        persistReviewedState(fp, state.reviewedInns);
-        return;
-      }
-      const stored = loadReviewedState();
-      if (stored.fp === fp) {
-        state.reviewedInns = new Set(stored.inns);
-      }
+      state.reviewedFp = fp;
+      state.reviewedInns = new Set(loadReviewedInnsForFp(fp));
       persistReviewedState(fp, state.reviewedInns);
     }
 
@@ -1322,23 +1398,53 @@
       );
     }
 
+    function normalizeQueueQuery(q) {
+      return String(q || "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ");
+    }
+
+    function queueRowMatchesQuery(c, qNorm) {
+      if (!qNorm) return true;
+      const inn = String(c.inn || "").toLowerCase();
+      const name = String(c.name || "").toLowerCase();
+      return inn.includes(qNorm) || name.includes(qNorm);
+    }
+
+    function filterActionQueue(src) {
+      const qNorm = normalizeQueueQuery(state.queueQuery);
+      let list = src || [];
+      if (state.hideReviewed) list = list.filter((c) => !isReviewed(c.inn));
+      if (qNorm) list = list.filter((c) => queueRowMatchesQuery(c, qNorm));
+      return list;
+    }
+
     function updateQueueTools(r) {
       const tools = document.getElementById("queueTools");
       const progress = document.getElementById("queueProgress");
       const hideCb = document.getElementById("hideReviewed");
+      const searchInput = document.getElementById("queueSearch");
       if (!tools) return;
       const onQueue = state.tab === "queue" && !!r;
       tools.hidden = !onQueue;
       if (!onQueue) return;
       if (hideCb) hideCb.checked = !!state.hideReviewed;
+      if (searchInput && searchInput.value !== state.queueQuery) {
+        searchInput.value = state.queueQuery;
+      }
       const total = (r.actionQueue || []).length;
       const done = (r.actionQueue || []).filter((c) => isReviewed(c.inn)).length;
+      const visible = filterActionQueue(r.actionQueue || []).length;
+      const qNorm = normalizeQueueQuery(state.queueQuery);
       if (progress) {
-        progress.textContent =
+        let text =
           total === 0
             ? "очередь пуста"
-            : `разобрано ${done} / ${total}` +
-              (state.hideReviewed && done ? ` · скрыто ${done}` : "");
+            : `разобрано ${done} / ${total}`;
+        if (total && state.hideReviewed && done) text += ` · скрыто ${done}`;
+        if (total && qNorm) text += ` · найдено ${visible}`;
+        progress.textContent = text;
       }
     }
 
@@ -1382,9 +1488,7 @@
         }));
       } else if (state.tab === "queue") {
         const src = r.actionQueue || [];
-        const visible = state.hideReviewed
-          ? src.filter((c) => !isReviewed(c.inn))
-          : src;
+        const visible = filterActionQueue(src);
         head = ["Разбор", "ИНН", "Компания", "Тип риска", "Max / остаток ОДО", "Что проверить"];
         wrapCols = new Set([3, 5]);
         rows = visible.map((c) => ({
@@ -1693,6 +1797,9 @@
         state.checkedAt = new Date();
         syncReviewedForRun();
         state.hideReviewed = false;
+        state.queueQuery = "";
+        const qInput = document.getElementById("queueSearch");
+        if (qInput) qInput.value = "";
         state.result = analyze(state.membersRows, state.contractsRows);
         results.classList.remove("hidden");
         exportBtn.classList.remove("hidden");
@@ -2394,7 +2501,7 @@
         if (!input || !resultsTable.contains(input)) return;
         const on = input.checked;
         setReviewed(input.dataset.reviewedInn, on);
-        if (state.hideReviewed) {
+        if (state.hideReviewed || normalizeQueueQuery(state.queueQuery)) {
           renderTable();
           return;
         }
@@ -2416,6 +2523,13 @@
       hideReviewedCb.addEventListener("change", () => {
         state.hideReviewed = !!hideReviewedCb.checked;
         if (state.result) renderTable();
+      });
+    }
+    const queueSearchInput = document.getElementById("queueSearch");
+    if (queueSearchInput) {
+      queueSearchInput.addEventListener("input", () => {
+        state.queueQuery = queueSearchInput.value;
+        if (state.result && state.tab === "queue") renderTable();
       });
     }
     const resetReviewedBtn = document.getElementById("resetReviewed");
