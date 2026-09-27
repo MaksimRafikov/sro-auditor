@@ -672,6 +672,16 @@
       border-color: #1e293b;
       color: #fff;
     }
+    .tabs button[data-tab="queue"].active {
+      background: var(--color-crit);
+      border-color: var(--color-crit);
+    }
+    .tabs button[data-tab="manualErch"].active,
+    .tabs button[data-tab="manualIncomplete"].active {
+      background: var(--color-warn);
+      border-color: var(--color-warn);
+      color: #fff;
+    }
 
     .table-wrap {
       overflow: auto;
@@ -692,6 +702,12 @@
       vertical-align: top;
       white-space: nowrap;
     }
+    td.cell-wrap {
+      white-space: normal;
+      min-width: 12rem;
+      max-width: 28rem;
+      line-height: 1.35;
+    }
     th {
       position: sticky;
       top: 0;
@@ -707,10 +723,252 @@
     td:first-child, th:first-child { position: sticky; left: 0; background: inherit; }
     th:first-child { background: #eef2f7; }
     tbody tr:hover td:first-child { background: #f8fafc; }
+    tbody tr.row-open {
+      cursor: pointer;
+    }
+    tbody tr.row-open:hover td {
+      background: #fff7ed;
+    }
+    tbody tr.row-open:hover td:first-child { background: #fff7ed; }
+    tbody tr.row-open:focus-visible {
+      outline: none;
+      box-shadow: inset 3px 0 0 var(--color-cta);
+    }
+    tbody tr.row-open:focus-visible td { background: #fff7ed; }
+    tbody tr.row-open:focus-visible td:first-child { background: #fff7ed; }
     td.num, th.num {
       font-family: var(--font-mono);
       font-variant-numeric: tabular-nums;
       font-size: 0.82rem;
+    }
+
+    /* INN card drawer */
+    body.inn-drawer-open { overflow: hidden; }
+    .inn-drawer-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      background: rgba(15, 23, 42, 0.45);
+      display: flex;
+      justify-content: flex-end;
+      align-items: stretch;
+      padding: 0;
+    }
+    .inn-drawer {
+      width: min(560px, 100%);
+      background: var(--color-panel);
+      border-left: 1px solid var(--color-line);
+      box-shadow: var(--shadow-md);
+      display: flex;
+      flex-direction: column;
+      max-height: 100vh;
+      animation: innSlide 0.2s ease both;
+    }
+    @keyframes innSlide {
+      from { transform: translateX(16px); opacity: 0.85; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .inn-drawer { animation: none !important; }
+    }
+    .inn-drawer-head {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      justify-content: space-between;
+      padding: 16px 18px 12px;
+      border-bottom: 1px solid var(--color-line);
+      background: #f8fafc;
+    }
+    .inn-drawer-head h2 {
+      margin: 0;
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--color-ink);
+      text-wrap: balance;
+      line-height: 1.3;
+    }
+    .inn-drawer-meta {
+      margin-top: 4px;
+      color: var(--color-muted);
+      font-size: 0.82rem;
+    }
+    .inn-drawer-head-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .inn-drawer-body {
+      padding: 14px 18px 24px;
+      overflow: auto;
+      flex: 1;
+    }
+    .inn-drawer-foot {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      padding: 12px 18px;
+      border-top: 1px solid var(--color-line);
+      background: #fff;
+    }
+    .inn-drawer-foot #innCopyLetter {
+      background: #1e293b;
+      color: #fff;
+      border-color: #1e293b;
+    }
+    .inn-drawer-foot #innCopyLetter:hover {
+      background: #0f172a;
+      border-color: #0f172a;
+      color: #fff;
+    }
+    .inn-copy-status {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--color-ok);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .inn-block {
+      margin-bottom: 18px;
+    }
+    .inn-block-title {
+      margin: 0 0 8px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .inn-count {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+      color: var(--color-ink);
+      background: #eef2f7;
+      border: 1px solid var(--color-line);
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 0.7rem;
+    }
+    .inn-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px 14px;
+      margin: 0;
+    }
+    @media (max-width: 520px) {
+      .inn-grid { grid-template-columns: 1fr; }
+    }
+    .inn-grid dt {
+      margin: 0;
+      font-size: 0.72rem;
+      color: var(--color-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .inn-grid dd {
+      margin: 3px 0 0;
+      color: var(--color-ink);
+      font-size: 0.9rem;
+    }
+    .inn-mono {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+      font-size: 0.84rem;
+    }
+    .inn-chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 7px;
+      border-radius: 4px;
+      border: 1px solid var(--color-line);
+      background: #f8fafc;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.02em;
+      color: var(--color-text);
+    }
+    .inn-chip--crit {
+      color: var(--color-crit);
+      background: var(--color-crit-bg);
+      border-color: currentColor;
+    }
+    .inn-chip--ok {
+      color: var(--color-ok);
+      background: var(--color-ok-bg);
+      border-color: currentColor;
+    }
+    .inn-periods {
+      margin: 0;
+      padding-left: 1.1rem;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      color: var(--color-ink);
+    }
+    .inn-periods li { margin-bottom: 4px; }
+    .inn-empty {
+      margin: 0;
+      color: var(--color-muted);
+      font-size: 0.86rem;
+    }
+    .inn-aside {
+      margin: 10px 0 0;
+      font-size: 0.82rem;
+      color: var(--color-text);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 10px;
+      align-items: center;
+    }
+    .inn-table-wrap {
+      overflow: auto;
+      border: 1px solid var(--color-line);
+      border-radius: var(--radius);
+      max-height: 240px;
+    }
+    .inn-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.78rem;
+    }
+    .inn-table th,
+    .inn-table td {
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--color-line);
+      text-align: left;
+      white-space: nowrap;
+      vertical-align: top;
+    }
+    .inn-table th {
+      position: sticky;
+      top: 0;
+      background: #eef2f7;
+      font-size: 0.68rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--color-ink);
+    }
+    .inn-table td.cell-wrap {
+      white-space: normal;
+      min-width: 5rem;
+    }
+    .inn-comment,
+    .inn-letter-text {
+      margin: 0;
+      font-size: 0.86rem;
+      line-height: 1.45;
+      text-wrap: pretty;
+      color: var(--color-text);
+    }
+    .inn-letter-preview {
+      border: 1px dashed var(--color-line);
+      border-radius: var(--radius);
+      padding: 12px;
+      background: #f8fafc;
     }
 
     /* Risk stamps (ink stamp, not soft pill) */
@@ -895,10 +1153,12 @@
       <div class="map-warn" id="mapWarn" role="status"></div>
       <div id="stats"></div>
       <div class="tabs" role="tablist" aria-label="Разрезы отчёта">
-        <button type="button" class="active" data-tab="companies" role="tab" aria-selected="true">Все</button>
-        <button type="button" data-tab="risks" role="tab" aria-selected="false">Критично</button>
-        <button type="button" data-tab="manual" role="tab" aria-selected="false">Ручная</button>
-        <button type="button" data-tab="contracts" role="tab" aria-selected="false">Договоры</button>
+        <button type="button" data-tab="queue" data-label="К исполнению" role="tab" aria-selected="false">К исполнению</button>
+        <button type="button" class="active" data-tab="companies" data-label="Все" role="tab" aria-selected="true">Все</button>
+        <button type="button" data-tab="risks" data-label="Критично" role="tab" aria-selected="false">Критично</button>
+        <button type="button" data-tab="manualErch" data-label="ЕРЧ" role="tab" aria-selected="false">ЕРЧ</button>
+        <button type="button" data-tab="manualIncomplete" data-label="Данные неполные" role="tab" aria-selected="false">Данные неполные</button>
+        <button type="button" data-tab="contracts" data-label="Договоры" role="tab" aria-selected="false">Договоры</button>
       </div>
       <div class="table-wrap">
         <table>
@@ -915,9 +1175,35 @@
         4.1 и 4.2 считают ВВ и ОДО только по договорам внутри этих периодов.
         Сверка ЕРЧ: договоры не раньше даты регистрации и, если есть дата расчёта, не позже неё.
         Расхождение &gt; 5% или &gt; 1 млн ₽ остаётся на ручную проверку.
-        Клик по строке сводки фильтрует таблицу.
+        Клик по строке сводки фильтрует таблицу («Все»).
+        Клик по строке компании / очереди / договора открывает карточку ИНН (лимиты, право, приостановки, договоры, копирование формулировки).
+        Вкладка «К исполнению» — только критичные, по тяжести и сумме; тот же список — лист Excel «К исполнению».
+        «ЕРЧ» и «Данные неполные» — раздельные срезы бывшей «Ручной»; те же списки — листы Excel.
       </footer>
     </section>
+  </div>
+
+  <div id="innDrawerOverlay" class="inn-drawer-overlay hidden" hidden>
+    <aside id="innDrawer" class="inn-drawer" role="dialog" aria-modal="true"
+           aria-labelledby="innDrawerTitle">
+      <header class="inn-drawer-head">
+        <div>
+          <h2 id="innDrawerTitle">Карточка ИНН</h2>
+          <div class="inn-drawer-meta" id="innDrawerMeta"></div>
+        </div>
+        <div class="inn-drawer-head-actions">
+          <span id="innDrawerStamp"></span>
+          <button type="button" class="ghost" id="innDrawerClose" aria-label="Закрыть карточку">
+            Закрыть
+          </button>
+        </div>
+      </header>
+      <div class="inn-drawer-body" id="innDrawerBody"></div>
+      <footer class="inn-drawer-foot">
+        <button type="button" class="ghost" id="innCopyLetter">Копировать для письма</button>
+        <span id="innCopyStatus" class="inn-copy-status hidden" role="status" aria-live="polite"></span>
+      </footer>
+    </aside>
   </div>
 
   <script src="./_sro_logic.js"></script>

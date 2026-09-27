@@ -6,6 +6,8 @@
 
 Спека логики: `knowledge/`, диалог-источник: `chatgpt-dialog.md`.
 
+Очередь UX для оператора (один срез = один чат): `OPERATOR_UX_BACKLOG.md`.
+
 ## Product surface
 
 | Артефакт | Роль |

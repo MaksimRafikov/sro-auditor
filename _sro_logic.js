@@ -501,6 +501,7 @@
           vvExceedSusp: false,
           odoExceedSusp: false,
           odoMismatch: false,
+          dataIncomplete: false,
           notFound: false,
         };
 
@@ -623,6 +624,7 @@
               comments.push("нет уровня ОДО при договорах 44/223/615");
             } else {
               if (risk !== "КРИТИЧНО") risk = "РУЧНАЯ ПРОВЕРКА";
+              flags.dataIncomplete = true;
               comments.push("конкурентные договоры не 44/223/615, уровень ОДО не указан");
             }
           } else if (Number.isFinite(odoLimit) && odoResidual > odoLimit) {
@@ -639,14 +641,17 @@
 
         if (unclear.length > 0) {
           if (risk !== "КРИТИЧНО") risk = "РУЧНАЯ ПРОВЕРКА";
+          flags.dataIncomplete = true;
           comments.push(`без способа закупки: ${unclear.length}`);
         }
         if (inScope.some((c) => c.weirdMoney) || beforeMembershipList.some((c) => c.weirdMoney)) {
           if (risk !== "КРИТИЧНО") risk = "РУЧНАЯ ПРОВЕРКА";
+          flags.dataIncomplete = true;
           comments.push("странный формат суммы");
         }
         if (inScope.some((c) => c.assumptionNoDone) || beforeMembershipList.some((c) => c.assumptionNoDone)) {
           if (risk !== "КРИТИЧНО") risk = "РУЧНАЯ ПРОВЕРКА";
+          flags.dataIncomplete = true;
           comments.push("исполнение не найдено — остаток = полная стоимость");
         }
         if (excludedCount > 0) {
@@ -707,6 +712,8 @@
           registryOblig,
           obligDate,
           regDate,
+          periods,
+          periodsText: periods.length ? formatPeriods(periods) : "",
           odoResidualErch,
           odoCheck,
           contractsCount: counted.length,
@@ -755,6 +762,12 @@
         beforeMembershipContracts: contracts.list.filter((c) => c.beforeMembership).length,
         critical: companies.filter((c) => c.risk === "КРИТИЧНО").length,
         manual: companies.filter((c) => c.risk === "РУЧНАЯ ПРОВЕРКА").length,
+        manualErch: companies.filter(
+          (c) => c.risk === "РУЧНАЯ ПРОВЕРКА" && c.flags.odoMismatch
+        ).length,
+        manualIncomplete: companies.filter(
+          (c) => c.risk === "РУЧНАЯ ПРОВЕРКА" && c.flags.dataIncomplete
+        ).length,
         ok: companies.filter((c) => c.risk === "НОРМА").length,
         sumAccepted: contracts.list
           .filter((c) => !c.excluded)
@@ -777,11 +790,19 @@
         },
       };
 
+      const risks = companies.filter((c) => c.risk === "КРИТИЧНО");
       return {
         summary,
         companies,
-        risks: companies.filter((c) => c.risk === "КРИТИЧНО"),
+        risks,
+        actionQueue: buildActionQueue(companies),
         manual: companies.filter((c) => c.risk === "РУЧНАЯ ПРОВЕРКА"),
+        manualErch: companies.filter(
+          (c) => c.risk === "РУЧНАЯ ПРОВЕРКА" && c.flags.odoMismatch
+        ),
+        manualIncomplete: companies.filter(
+          (c) => c.risk === "РУЧНАЯ ПРОВЕРКА" && c.flags.dataIncomplete
+        ),
         contracts: contracts.list,
         membersMeta: members.cols,
         contractsMeta: contracts.cols,
@@ -799,10 +820,125 @@
       return `<span class="stamp ${cls}">${risk}</span>`;
     }
 
+    /** Тяжесть для очереди «К исполнению»: 0 приостановка/право → 1 ВВ/ОДО → 2 нет в реестре. */
+    function actionSeverity(c) {
+      const f = c.flags || {};
+      const rightIssue =
+        f.suspended || c.right === "приостановлено" || c.right === "прекращено";
+      if (rightIssue) return 0;
+      if (f.vvExceed || f.odoExceed || f.noOdo || f.vvExceedSusp || f.odoExceedSusp) return 1;
+      if (f.notFound) return 2;
+      return 3;
+    }
+
+    function actionRiskType(c) {
+      const f = c.flags || {};
+      const parts = [];
+      if (f.suspended) parts.push("Приостановка");
+      else if (c.right === "приостановлено" || c.right === "прекращено") {
+        parts.push(c.right === "прекращено" ? "Право прекращено" : "Право приостановлено");
+      }
+      if (f.vvExceed || f.vvExceedSusp) parts.push("Превышение ВВ");
+      if (f.odoExceed || f.odoExceedSusp) parts.push("Превышение ОДО");
+      if (f.noOdo) parts.push("Нет ОДО");
+      if (f.notFound) parts.push("Нет в реестре");
+      return parts.length ? parts.join("; ") : "Критично";
+    }
+
+    function actionMetric(c) {
+      return `max ${fmtMoney(c.maxContract)} · ОДО ${fmtMoney(c.odoResidual)}`;
+    }
+
+    function actionCheckHint(c) {
+      const f = c.flags || {};
+      const hints = [];
+      if (f.suspended) {
+        hints.push(
+          `сверить ${c.contractsInSuspensionCount || 0} дог. с периодами приостановки`
+        );
+      } else if (c.right === "приостановлено" || c.right === "прекращено") {
+        hints.push(`подтвердить статус права («${c.right}») в реестре`);
+      }
+      if (f.vvExceed || f.vvExceedSusp) {
+        hints.push(
+          `сверить max договор ${fmtMoney(c.maxContract)} с лимитом ВВ ${fmtMoney(c.vvLimit)}`
+        );
+      }
+      if (f.odoExceed || f.odoExceedSusp) {
+        hints.push(
+          `сверить остаток ОДО ${fmtMoney(c.odoResidual)} с лимитом ${fmtMoney(c.odoLimit)}`
+        );
+      }
+      if (f.noOdo) hints.push("проверить, почему нет уровня ОДО при 44/223/615");
+      if (f.notFound) hints.push("найти ИНН в реестре членов / уточнить принадлежность к СРО");
+      if (!hints.length && c.comment) return c.comment;
+      return hints.join("; ") || "разобрать критичный риск";
+    }
+
+    function letterDraftFor(c) {
+      const name = c.name || "—";
+      const type =
+        c.risk === "КРИТИЧНО"
+          ? actionRiskType(c)
+          : c.comment || c.risk || "без формулировки";
+      const vvLabel = (c.vvText || fmtMoney(c.vvLimit) || "н/д").replace(/\.\s*$/, "");
+      const odoLabel = (c.odoText || fmtMoney(c.odoLimit) || "н/д").replace(/\.\s*$/, "");
+      let lead;
+      if (c.risk === "КРИТИЧНО") {
+        lead = `По результатам сверки договоров члена СРО ИНН ${c.inn} (${name}) выявлено критическое отклонение: ${type}.`;
+      } else if (c.risk === "РУЧНАЯ ПРОВЕРКА") {
+        lead = `По результатам сверки договоров члена СРО ИНН ${c.inn} (${name}) требуется ручная проверка: ${type}.`;
+      } else {
+        lead = `Справка по члену СРО ИНН ${c.inn} (${name}): статус «${c.risk || "НОРМА"}».`;
+      }
+      const bits = [lead];
+      if (c.vvLimit != null || c.maxContract) {
+        bits.push(
+          `Максимальный один договор: ${fmtMoney(c.maxContract)} при уровне ВВ ${vvLabel}.`
+        );
+      }
+      if (c.odoLimit != null || c.odoResidual) {
+        bits.push(
+          `Остаток обязательств (ОДО): ${fmtMoney(c.odoResidual)} при уровне ОДО ${odoLabel}.`
+        );
+      }
+      if (c.periodsText) bits.push(`Периоды приостановки: ${c.periodsText}.`);
+      if (c.comment && c.risk === "КРИТИЧНО") bits.push(`Детали: ${c.comment}.`);
+      else if (c.comment && c.risk !== "РУЧНАЯ ПРОВЕРКА") bits.push(`Детали: ${c.comment}.`);
+      bits.push("Рекомендуется провести проверку и зафиксировать решение в протоколе.");
+      return bits.join(" ");
+    }
+
+    function actionLetterDraft(c) {
+      return letterDraftFor(c);
+    }
+
+    function buildActionQueue(companies) {
+      return companies
+        .filter((c) => c.risk === "КРИТИЧНО")
+        .map((c) => ({
+          ...c,
+          queueSeverity: actionSeverity(c),
+          riskTypeShort: actionRiskType(c),
+          metricShort: actionMetric(c),
+          checkHint: actionCheckHint(c),
+          letterDraft: actionLetterDraft(c),
+          sortAmount: Math.max(c.maxContract || 0, c.odoResidual || 0),
+        }))
+        .sort(
+          (a, b) =>
+            a.queueSeverity - b.queueSeverity ||
+            b.sortAmount - a.sortAmount ||
+            String(a.inn).localeCompare(String(b.inn), "ru")
+        );
+    }
+
     function companiesByFilter(r, filter) {
       if (!filter) return r.companies;
       if (filter === "risks") return r.risks;
       if (filter === "manual") return r.manual;
+      if (filter === "manualErch") return r.manualErch;
+      if (filter === "manualIncomplete") return r.manualIncomplete;
       if (filter === "odoExceed") return r.companies.filter((c) => c.flags.odoExceed);
       if (filter === "noOdo") return r.companies.filter((c) => c.flags.noOdo);
       if (filter === "vvExceed") return r.companies.filter((c) => c.flags.vvExceed);
@@ -914,6 +1050,12 @@
             <button type="button" class="summary-row clickable warn" data-filter="odoMismatch">
               <span>6. Сверка ЕРЧ</span><strong>${s.odoMismatch}</strong>
             </button>
+            <button type="button" class="summary-row clickable warn" data-filter="manualErch">
+              <span>Ручная · ЕРЧ</span><strong>${s.manualErch}</strong>
+            </button>
+            <button type="button" class="summary-row clickable warn" data-filter="manualIncomplete">
+              <span>Ручная · данные неполные</span><strong>${s.manualIncomplete}</strong>
+            </button>
             <button type="button" class="summary-row clickable" data-filter="beforeMembership">
               <span>До регистрации в реестре</span><strong>${s.beforeMembershipCompanies}</strong>
             </button>
@@ -938,11 +1080,35 @@
       });
     }
 
+    function escHtml(s) {
+      return String(s ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function companyByInn(inn) {
+      const r = state.result;
+      if (!r || !inn) return null;
+      return (r.companies || []).find((c) => String(c.inn) === String(inn)) || null;
+    }
+
+    function methodTypeLabel(t) {
+      if (t === "44") return "44-ФЗ";
+      if (t === "223") return "223-ФЗ";
+      if (t === "615") return "615-ФЗ";
+      if (t === "direct") return "прямой";
+      if (t === "other_comp") return "конкур.";
+      return "неясно";
+    }
+
     function renderTable() {
       const r = state.result;
       if (!r) return;
       let rows = [];
       let head = [];
+      let wrapCols = new Set();
       if (state.tab === "contracts") {
         head = [
           "ИНН",
@@ -958,37 +1124,46 @@
           "До регистрации",
           "Приостановка",
         ];
-        rows = r.contracts.map((c) => [
-          c.inn,
-          c.name,
-          c.number,
-          c.date || "—",
-          fmtMoney(c.amount),
-          fmtMoney(c.done),
-          c.excluded ? "—" : fmtMoney(c.residual),
-          c.method || "—",
-          c.methodType === "44"
-            ? "44-ФЗ"
-            : c.methodType === "223"
-              ? "223-ФЗ"
-              : c.methodType === "615"
-                ? "615-ФЗ"
-                : c.methodType === "direct"
-                  ? "прямой"
-                  : c.methodType === "other_comp"
-                    ? "конкур."
-                    : "неясно",
-          c.excluded ? "да" : "—",
-          c.beforeMembership ? "да" : "—",
-          c.inSuspensionPeriod ? "в периоде" : "—",
-        ]);
+        rows = r.contracts.map((c) => ({
+          inn: c.inn,
+          cells: [
+            c.inn,
+            c.name,
+            c.number,
+            c.date || "—",
+            fmtMoney(c.amount),
+            fmtMoney(c.done),
+            c.excluded ? "—" : fmtMoney(c.residual),
+            c.method || "—",
+            methodTypeLabel(c.methodType),
+            c.excluded ? "да" : "—",
+            c.beforeMembership ? "да" : "—",
+            c.inSuspensionPeriod ? "в периоде" : "—",
+          ],
+        }));
+      } else if (state.tab === "queue") {
+        const src = r.actionQueue || [];
+        head = ["ИНН", "Компания", "Тип риска", "Max / остаток ОДО", "Что проверить"];
+        wrapCols = new Set([2, 4]);
+        rows = src.map((c) => ({
+          inn: c.inn,
+          cells: [
+            c.inn,
+            c.name || "—",
+            c.riskTypeShort,
+            c.metricShort,
+            c.checkHint,
+          ],
+        }));
       } else {
         const src =
           state.tab === "risks"
             ? r.risks
-            : state.tab === "manual"
-              ? r.manual
-              : companiesByFilter(r, state.filter);
+            : state.tab === "manualErch"
+              ? r.manualErch
+              : state.tab === "manualIncomplete"
+                ? r.manualIncomplete
+                : companiesByFilter(r, state.filter);
         head = [
           "Риск",
           "ИНН",
@@ -1000,32 +1175,268 @@
           "Остаток ОДО",
           "Комментарий",
         ];
-        rows = src.map((c) => [
-          riskPill(c.risk),
-          c.inn,
-          c.name,
-          c.right,
-          c.vvText || "—",
-          fmtMoney(c.maxContract),
-          c.odoText || "—",
-          fmtMoney(c.odoResidual),
-          c.comment || "—",
-        ]);
+        wrapCols = new Set([8]);
+        rows = src.map((c) => ({
+          inn: c.inn,
+          cells: [
+            riskPill(c.risk),
+            c.inn,
+            c.name,
+            c.right,
+            c.vvText || "—",
+            fmtMoney(c.maxContract),
+            c.odoText || "—",
+            fmtMoney(c.odoResidual),
+            c.comment || "—",
+          ],
+        }));
       }
       document.getElementById("thead").innerHTML =
         "<tr>" + head.map((h) => `<th>${h}</th>`).join("") + "</tr>";
       document.getElementById("tbody").innerHTML = rows
-        .map((row) => "<tr>" + row.map((cell) => `<td>${cell}</td>`).join("") + "</tr>")
+        .map((row) => {
+          const innAttr = row.inn ? ` data-inn="${escHtml(row.inn)}"` : "";
+          const openable = row.inn ? ' class="row-open" tabindex="0" role="button"' : "";
+          const label = row.inn
+            ? ` aria-label="Открыть карточку ИНН ${escHtml(row.inn)}"`
+            : "";
+          return (
+            `<tr${innAttr}${openable}${label}>` +
+            row.cells
+              .map(
+                (cell, i) =>
+                  `<td${wrapCols.has(i) ? ' class="cell-wrap"' : ""}>${cell}</td>`
+              )
+              .join("") +
+            "</tr>"
+          );
+        })
         .join("");
+      updateTabCounts(r);
+    }
+
+    function updateTabCounts(r) {
+      const counts = {
+        queue: (r.actionQueue || []).length,
+        risks: (r.risks || []).length,
+        manualErch: (r.manualErch || []).length,
+        manualIncomplete: (r.manualIncomplete || []).length,
+      };
+      document.querySelectorAll(".tabs button[data-tab]").forEach((btn) => {
+        const base = btn.dataset.label || btn.textContent;
+        const n = counts[btn.dataset.tab];
+        btn.textContent = n != null ? `${base} ${n}` : base;
+      });
+    }
+
+    const innDrawer = {
+      overlay: document.getElementById("innDrawerOverlay"),
+      panel: document.getElementById("innDrawer"),
+      body: document.getElementById("innDrawerBody"),
+      title: document.getElementById("innDrawerTitle"),
+      meta: document.getElementById("innDrawerMeta"),
+      stamp: document.getElementById("innDrawerStamp"),
+      copyBtn: document.getElementById("innCopyLetter"),
+      closeBtn: document.getElementById("innDrawerClose"),
+      copyStatus: document.getElementById("innCopyStatus"),
+      lastFocus: null,
+      letter: "",
+      inn: null,
+    };
+
+    function rightChipClass(right) {
+      const s = String(right || "").toLowerCase();
+      if (s.includes("приостанов") || s.includes("прекращ") || s.includes("не найден")) {
+        return "inn-chip inn-chip--crit";
+      }
+      if (s.includes("действ")) return "inn-chip inn-chip--ok";
+      return "inn-chip";
+    }
+
+    function checkChip(label, value) {
+      const v = String(value || "н/д");
+      let cls = "inn-chip";
+      if (v === "превышение") cls += " inn-chip--crit";
+      else if (v === "ок") cls += " inn-chip--ok";
+      return `<span class="${cls}">${escHtml(label)}: ${escHtml(v)}</span>`;
+    }
+
+    function renderInnCard(inn) {
+      const c = companyByInn(inn);
+      if (!c || !innDrawer.body) return;
+      innDrawer.inn = String(c.inn);
+      innDrawer.letter = letterDraftFor(c);
+      if (innDrawer.title) {
+        innDrawer.title.textContent = c.name || `ИНН ${c.inn}`;
+      }
+      if (innDrawer.meta) {
+        innDrawer.meta.innerHTML = `<span class="inn-mono">ИНН ${escHtml(c.inn)}</span>`;
+      }
+      if (innDrawer.stamp) {
+        innDrawer.stamp.innerHTML = riskPill(c.risk);
+      }
+      if (innDrawer.copyStatus) {
+        innDrawer.copyStatus.textContent = "";
+        innDrawer.copyStatus.classList.add("hidden");
+      }
+
+      const contracts = (state.result.contracts || []).filter(
+        (x) => String(x.inn) === String(c.inn)
+      );
+      const periodsHtml = c.periodsText
+        ? `<ul class="inn-periods">${c.periodsText
+            .split("; ")
+            .map((p) => `<li>${escHtml(p)}</li>`)
+            .join("")}</ul>`
+        : `<p class="inn-empty">Периодов приостановки нет</p>`;
+
+      const contractRows = contracts.length
+        ? contracts
+            .map((x) => {
+              const flags = [];
+              if (x.excluded) flags.push("искл.");
+              if (x.beforeMembership) flags.push("до рег.");
+              if (x.inSuspensionPeriod) flags.push("приостановка");
+              return `<tr>
+                <td>${escHtml(x.number || "—")}</td>
+                <td class="num">${escHtml(x.date || "—")}</td>
+                <td class="num">${escHtml(fmtMoney(x.amount))}</td>
+                <td class="num">${x.excluded ? "—" : escHtml(fmtMoney(x.residual))}</td>
+                <td>${escHtml(methodTypeLabel(x.methodType))}</td>
+                <td class="cell-wrap">${flags.length ? escHtml(flags.join(", ")) : "—"}</td>
+              </tr>`;
+            })
+            .join("")
+        : `<tr><td colspan="6" class="inn-empty">Договоров по ИНН нет</td></tr>`;
+
+      innDrawer.body.innerHTML = `
+        <section class="inn-block" aria-labelledby="innLimitsTitle">
+          <h3 id="innLimitsTitle" class="inn-block-title">Лимиты и факт</h3>
+          <dl class="inn-grid">
+            <div><dt>Право</dt><dd><span class="${rightChipClass(c.right)}">${escHtml(c.right || "—")}</span></dd></div>
+            <div><dt>Уровень ВВ</dt><dd class="inn-mono">${escHtml(c.vvText || fmtMoney(c.vvLimit) || "—")}</dd></div>
+            <div><dt>Max договор</dt><dd class="inn-mono">${escHtml(fmtMoney(c.maxContract))}</dd></div>
+            <div><dt>Проверка ВВ</dt><dd>${checkChip("ВВ", c.vvCheck)}</dd></div>
+            <div><dt>Уровень ОДО</dt><dd class="inn-mono">${escHtml(c.odoText || fmtMoney(c.odoLimit) || "—")}</dd></div>
+            <div><dt>Остаток ОДО</dt><dd class="inn-mono">${escHtml(fmtMoney(c.odoResidual))}</dd></div>
+            <div><dt>Проверка ОДО</dt><dd>${checkChip("ОДО", c.odoCheck)}</dd></div>
+            <div><dt>Реестр обязательств</dt><dd class="inn-mono">${escHtml(fmtMoney(c.registryOblig))}</dd></div>
+          </dl>
+        </section>
+        <section class="inn-block" aria-labelledby="innSuspTitle">
+          <h3 id="innSuspTitle" class="inn-block-title">Приостановки</h3>
+          ${periodsHtml}
+          <p class="inn-aside">
+            Договоров в периоде: <strong class="inn-mono">${c.contractsInSuspensionCount || 0}</strong>
+            · ВВ в приостановке: ${checkChip("ВВ", c.vvCheckSusp)}
+            · ОДО в приостановке: ${checkChip("ОДО", c.odoCheckSusp)}
+          </p>
+        </section>
+        <section class="inn-block" aria-labelledby="innContractsTitle">
+          <h3 id="innContractsTitle" class="inn-block-title">
+            Договоры ИНН
+            <span class="inn-count">${contracts.length}</span>
+          </h3>
+          <div class="inn-table-wrap">
+            <table class="inn-table">
+              <thead>
+                <tr>
+                  <th>№</th>
+                  <th>Дата</th>
+                  <th>К учёту</th>
+                  <th>Остаток</th>
+                  <th>Тип</th>
+                  <th>Метки</th>
+                </tr>
+              </thead>
+              <tbody>${contractRows}</tbody>
+            </table>
+          </div>
+        </section>
+        ${
+          c.comment
+            ? `<section class="inn-block">
+                <h3 class="inn-block-title">Комментарий проверки</h3>
+                <p class="inn-comment">${escHtml(c.comment)}</p>
+              </section>`
+            : ""
+        }
+        <section class="inn-block inn-letter-preview" aria-labelledby="innLetterTitle">
+          <h3 id="innLetterTitle" class="inn-block-title">Формулировка для письма</h3>
+          <p class="inn-letter-text">${escHtml(innDrawer.letter)}</p>
+        </section>
+      `;
+    }
+
+    function openInnCard(inn) {
+      if (!innDrawer.overlay || !companyByInn(inn)) return;
+      innDrawer.lastFocus = document.activeElement;
+      renderInnCard(inn);
+      innDrawer.overlay.classList.remove("hidden");
+      innDrawer.overlay.removeAttribute("hidden");
+      document.body.classList.add("inn-drawer-open");
+      const focusEl = innDrawer.closeBtn || innDrawer.panel;
+      if (focusEl && typeof focusEl.focus === "function") focusEl.focus();
+    }
+
+    function closeInnCard() {
+      if (!innDrawer.overlay || innDrawer.overlay.classList.contains("hidden")) return;
+      innDrawer.overlay.classList.add("hidden");
+      innDrawer.overlay.setAttribute("hidden", "");
+      document.body.classList.remove("inn-drawer-open");
+      innDrawer.inn = null;
+      innDrawer.letter = "";
+      if (innDrawer.lastFocus && typeof innDrawer.lastFocus.focus === "function") {
+        innDrawer.lastFocus.focus();
+      }
+      innDrawer.lastFocus = null;
+    }
+
+    async function copyInnLetter() {
+      if (!innDrawer.letter) return;
+      const done = () => {
+        if (!innDrawer.copyStatus) return;
+        innDrawer.copyStatus.textContent = "Скопировано";
+        innDrawer.copyStatus.classList.remove("hidden");
+      };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(innDrawer.letter);
+          done();
+          return;
+        }
+      } catch (_) {
+        /* fallback below */
+      }
+      const ta = document.createElement("textarea");
+      ta.value = innDrawer.letter;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+        done();
+      } finally {
+        document.body.removeChild(ta);
+      }
     }
 
     function run() {
       clearError();
       try {
+        closeInnCard();
         state.filter = null;
+        state.tab = "queue";
         state.result = analyze(state.membersRows, state.contractsRows);
         results.classList.remove("hidden");
         exportBtn.classList.remove("hidden");
+        document.querySelectorAll(".tabs button").forEach((b) => {
+          const on = b.dataset.tab === "queue";
+          b.classList.toggle("active", on);
+          b.setAttribute("aria-selected", on ? "true" : "false");
+        });
         renderStats(state.result.summary);
         renderTable();
       } catch (e) {
@@ -1254,6 +1665,8 @@
         ["Договоры до регистрации в реестре", s.beforeMembershipContracts],
         ["Компаний с договорами до регистрации", s.beforeMembershipCompanies],
         ["Критичные (всего)", s.critical],
+        ["Ручная · ЕРЧ", s.manualErch],
+        ["Ручная · данные неполные", s.manualIncomplete],
         ["Ручная проверка (всего)", s.manual],
         ["Норма", s.ok],
         ["Сумма, принятая СРО к учёту, ₽", s.sumAccepted],
@@ -1323,7 +1736,32 @@
 
       const companiesAoA = [COMPANY_HEADER, ...companyRows(r.companies)];
       const risksAoA = [COMPANY_HEADER, ...companyRows(r.risks)];
-      const manualAoA = [COMPANY_HEADER, ...companyRows(r.manual)];
+      const manualErchAoA = [COMPANY_HEADER, ...companyRows(r.manualErch || [])];
+      const manualIncompleteAoA = [
+        COMPANY_HEADER,
+        ...companyRows(r.manualIncomplete || []),
+      ];
+      const queue = r.actionQueue || buildActionQueue(r.companies);
+      const queueAoA = [
+        [
+          "ИНН",
+          "Компания",
+          "Тип риска",
+          "Макс. один договор, ₽",
+          "Остаток ОДО, ₽",
+          "Что проверить",
+          "Черновик для письма / протокола",
+        ],
+        ...queue.map((c) => [
+          c.inn,
+          c.name || "",
+          c.riskTypeShort,
+          c.maxContract || 0,
+          c.odoResidual || 0,
+          c.checkHint,
+          c.letterDraft,
+        ]),
+      ];
 
       const wsSummary = XLSX.utils.aoa_to_sheet(summaryAoA);
       wsSummary["!cols"] = [{ wch: 48 }, { wch: 22 }];
@@ -1374,20 +1812,38 @@
         riskCol: COMPANY_RISK_COL,
         autofilter: true,
       });
-      const wsManual = styleSheet(XLSX.utils.aoa_to_sheet(manualAoA), {
+      const wsManualErch = styleSheet(XLSX.utils.aoa_to_sheet(manualErchAoA), {
         headerRows: 1,
         widths: COMPANY_WIDTHS,
         moneyCols: COMPANY_MONEY,
         riskCol: COMPANY_RISK_COL,
         autofilter: true,
       });
+      const wsManualIncomplete = styleSheet(
+        XLSX.utils.aoa_to_sheet(manualIncompleteAoA),
+        {
+          headerRows: 1,
+          widths: COMPANY_WIDTHS,
+          moneyCols: COMPANY_MONEY,
+          riskCol: COMPANY_RISK_COL,
+          autofilter: true,
+        }
+      );
+      const wsQueue = styleSheet(XLSX.utils.aoa_to_sheet(queueAoA), {
+        headerRows: 1,
+        widths: [12, 28, 22, 16, 16, 42, 56],
+        moneyCols: [3, 4],
+        autofilter: true,
+      });
 
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, wsSummary, "Сводка");
+      XLSX.utils.book_append_sheet(wb, wsQueue, "К исполнению");
       XLSX.utils.book_append_sheet(wb, wsCompanies, "Проверка компаний");
       XLSX.utils.book_append_sheet(wb, wsContracts, "Договоры с расчётом");
       XLSX.utils.book_append_sheet(wb, wsRisks, "Риски");
-      XLSX.utils.book_append_sheet(wb, wsManual, "Ручная проверка");
+      XLSX.utils.book_append_sheet(wb, wsManualErch, "ЕРЧ");
+      XLSX.utils.book_append_sheet(wb, wsManualIncomplete, "Данные неполные");
 
       const fname = `СРО_сверка_договоры_лимиты_${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}.xlsx`;
       XLSX.writeFile(wb, fname);
@@ -1450,6 +1906,14 @@
         "Расчёт обязательств": 10000000,
         "Дата расчёта размера обязательств": "01.04.2025",
         "Дата регистрации в реестре СРО": "01.01.2025",
+      },
+      {
+        Контрагент: "ООО ЗетаСервис",
+        ИНН: "7707890123",
+        "Состояние права": "Действует",
+        "Уровень ВВ": "до 90 млн руб.",
+        "Уровень ОДО": "до 90 млн руб.",
+        "Расчёт обязательств": 0,
       },
     ];
 
@@ -1553,6 +2017,15 @@
         "Стоимость принятых работ": 0,
         "Вид закупки": "",
       },
+      {
+        Контрагент: "ООО ЗетаСервис",
+        ИНН: "7707890123",
+        "Номер договора": "Z-1",
+        "Дата заключения": "10.02.2025",
+        "Стоимость, принятая СРО к учёту": 8000000,
+        "Стоимость принятых работ": 0,
+        "Вид закупки": "",
+      },
     ];
 
     membersInput.addEventListener("change", async (e) => {
@@ -1609,6 +2082,33 @@
         });
         renderTable();
       });
+    });
+
+    const resultsTable = document.querySelector("#results .table-wrap table");
+    if (resultsTable) {
+      resultsTable.addEventListener("click", (e) => {
+        const tr = e.target.closest("tr[data-inn]");
+        if (!tr || !resultsTable.contains(tr)) return;
+        openInnCard(tr.dataset.inn);
+      });
+      resultsTable.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        const tr = e.target.closest("tr[data-inn]");
+        if (!tr || e.target !== tr) return;
+        e.preventDefault();
+        openInnCard(tr.dataset.inn);
+      });
+    }
+
+    if (innDrawer.closeBtn) innDrawer.closeBtn.addEventListener("click", closeInnCard);
+    if (innDrawer.copyBtn) innDrawer.copyBtn.addEventListener("click", copyInnLetter);
+    if (innDrawer.overlay) {
+      innDrawer.overlay.addEventListener("click", (e) => {
+        if (e.target === innDrawer.overlay) closeInnCard();
+      });
+    }
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeInnCard();
     });
 
     /* --- Шаг 1: реестр членов из НОСТРОЙ через локальный helper ------------- */
