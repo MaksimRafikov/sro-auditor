@@ -17,3 +17,11 @@ Desktop.ini
 *.log
 tmp/
 temp/
+
+# Локальный кэш выгрузок НОСТРОЙ и рабочие сессии агента
+cache/
+.ecc/
+samples/nostroy_263/
+__pycache__/
+*.py[cod]
+.playwright-mcp/

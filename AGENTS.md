@@ -10,10 +10,16 @@
 
 | Артефакт | Роль |
 |---|---|
-| `sro_checker.html` | MVP UI: загрузка 2 Excel → сверка → риски → CSV |
+| `sro_checker.html` | MVP UI: номер СРО → НОСТРОЙ → договоры → риски → Excel |
+| `_sro_logic.js` | Алгоритм ВВ/ОДО + шаг «Реестр членов из НОСТРОЙ» |
+| `tools/sro_server.py` | Локальный helper: статика + API НОСТРОЙ (обход CORS) |
+| `tools/nostroy_connector.py` | Выгрузка реестра членов + нормализация под `analyze()` |
 | `knowledge/*` | GPT Instructions + Knowledge |
 | `design-system/sro-auditor/MASTER.md` | Визуальный source of truth |
-| `samples/*` | Демо CSV |
+| `samples/*` | Демо CSV + шаблон реестра договоров |
+
+Реестр членов приходит из НОСТРОЙ по номеру СРО; Excel членов — только fallback.
+Наружу ходит только helper, договоры остаются в браузере.
 
 ## Skills wired
 
@@ -41,7 +47,8 @@ Junctions: `.cursor/skills/<name>` → `ECC-main/skills/*` или `~/.cursor/ski
 
 ## Do not
 
-- Не отправлять загруженные Excel на внешний сервер в HTML-MVP.
+- Не отправлять загруженные Excel на внешний сервер в HTML-MVP; helper ходит только в реестр НОСТРОЙ.
+- Не делать обязательную загрузку «Реестр членов.xlsx» в основном сценарии.
 - Не зашивать актуальные реестры в GPT Knowledge.
 - Не менять пороги ВВ/ОДО из ГрК без явного запроса.
 - Не деплоить live без review через `security-scan`.

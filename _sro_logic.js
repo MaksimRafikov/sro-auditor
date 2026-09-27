@@ -3,6 +3,8 @@
     const state = {
       membersRows: null,
       contractsRows: null,
+      membersMeta: null,
+      membersSource: null,
       result: null,
       tab: "companies",
       filter: null,
@@ -29,9 +31,15 @@
     function updateReady() {
       const ok = !!(state.membersRows && state.contractsRows);
       runBtn.disabled = !ok;
-      fileHint.textContent = ok
-        ? `Готово: ${state.membersRows.length} строк реестра, ${state.contractsRows.length} договоров.`
-        : "Выберите оба файла или нажмите «демо-данные».";
+      if (ok) {
+        fileHint.textContent = `Готово: ${state.membersRows.length} членов реестра, ${state.contractsRows.length} договоров.`;
+      } else if (state.membersRows) {
+        fileHint.textContent = `Реестр членов готов (${state.membersRows.length}). Загрузите договоры.`;
+      } else if (state.contractsRows) {
+        fileHint.textContent = "Договоры загружены. Обновите реестр членов в шаге 1.";
+      } else {
+        fileHint.textContent = "Обновите реестр членов и загрузите договоры.";
+      }
     }
 
     async function readTable(file) {
@@ -41,7 +49,13 @@
         );
       }
       const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array", cellDates: true });
+      // В CSV нет типов, и SheetJS угадывает их по-американски: ИНН 0278105091
+      // становится числом без ведущего нуля, 04.12.2020 — 4 декабря,
+      // а «1234,56» — 123456. Читаем CSV текстом и разбираем своими парсерами.
+      const isCsv = /\.csv$/i.test(file.name) || file.type === "text/csv";
+      const wb = isCsv
+        ? XLSX.read(buf, { type: "array", raw: true })
+        : XLSX.read(buf, { type: "array", cellDates: true });
       const sheet = wb.Sheets[wb.SheetNames[0]];
       return XLSX.utils.sheet_to_json(sheet, { defval: "", raw: true });
     }
@@ -97,7 +111,11 @@
 
     function normalizeInn(v) {
       const digits = String(v ?? "").replace(/\D/g, "");
-      return digits || "";
+      if (!digits) return "";
+      // Excel/CSV часто отдают ИНН числом и съедают ведущий ноль (регионы 01–09).
+      // ИНН ЮЛ — 10 цифр, ИП — 12; код региона 00 не существует, ноль всегда один.
+      if (digits.length === 9 || digits.length === 11) return "0" + digits;
+      return digits;
     }
 
     function parseMoney(v) {
@@ -1192,9 +1210,20 @@
         "." +
         today.getFullYear();
 
+      const meta = state.membersMeta;
       const summaryAoA = [
         ["Показатель", "Значение"],
         ["Дата проверки", dateStr],
+        [
+          "Источник реестра членов",
+          meta
+            ? `НОСТРОЙ, СРО ${meta.sro_id}`
+            : state.membersSource === "file"
+              ? "файл реестра членов"
+              : "демо-данные",
+        ],
+        ["Дата выгрузки реестра членов", meta ? fmtExportedAt(meta.exported_at) : ""],
+        ["Членов в реестре", meta ? meta.stats.members : state.membersRows.length],
         ["Всего договоров", s.contracts],
         ["из них по 44-ФЗ", s.byFz44],
         ["по 223-ФЗ", s.byFz223],
@@ -1520,6 +1549,9 @@
       clearError();
       try {
         state.membersRows = await readTable(e.target.files[0]);
+        state.membersMeta = null;
+        state.membersSource = "file";
+        onMembersFromFile(e.target.files[0], state.membersRows.length);
         updateReady();
       } catch (err) {
         showError("Не удалось прочитать реестр членов: " + err.message);
@@ -1528,8 +1560,10 @@
 
     contractsInput.addEventListener("change", async (e) => {
       clearError();
+      const file = e.target.files[0];
       try {
-        state.contractsRows = await readTable(e.target.files[0]);
+        state.contractsRows = await readTable(file);
+        markFilled("contracts", file.name);
         updateReady();
       } catch (err) {
         showError("Не удалось прочитать договоры: " + err.message);
@@ -1541,8 +1575,13 @@
     sampleBtn.addEventListener("click", () => {
       state.membersRows = SAMPLE_MEMBERS;
       state.contractsRows = SAMPLE_CONTRACTS;
+      state.membersMeta = null;
+      state.membersSource = "sample";
       membersInput.value = "";
       contractsInput.value = "";
+      markFilled("members", null);
+      markFilled("contracts", "демо · договоры");
+      onMembersFromSample(SAMPLE_MEMBERS.length);
       updateReady();
       run();
     });
@@ -1561,3 +1600,620 @@
         renderTable();
       });
     });
+
+    /* --- Шаг 1: реестр членов из НОСТРОЙ через локальный helper ------------- */
+
+    const HELPER_ORIGIN = "http://127.0.0.1:8765";
+    const SRO_ID_KEY = "sro-auditor:sroId";
+    const POLL_MS = 700;
+    const HELPER_CMD = "python tools/sro_server.py";
+
+    const sroInput = document.getElementById("sroId");
+    const fetchBtn = document.getElementById("fetchBtn");
+    const sroTitle = document.getElementById("sroTitle");
+    const registryStatus = document.getElementById("registryStatus");
+    const registryStatusText = document.getElementById("registryStatusText");
+    const registryProgress = document.getElementById("registryProgress");
+    const registryBar = document.getElementById("registryBar");
+    const registryMeta = document.getElementById("registryMeta");
+    const registryActions = document.getElementById("registryActions");
+    const registryError = document.getElementById("registryError");
+    const membersFallback = document.getElementById("membersFallback");
+    const membersPreview = document.getElementById("membersPreview");
+    const membersPreviewBtn = document.getElementById("membersPreviewBtn");
+    const membersExcelBtn = document.getElementById("membersExcelBtn");
+    const membersPreviewCount = document.getElementById("membersPreviewCount");
+    const membersPreviewFilter = document.getElementById("membersPreviewFilter");
+    const membersPreviewHead = document.getElementById("membersPreviewHead");
+    const membersPreviewBody = document.getElementById("membersPreviewBody");
+    const membersPreviewEmpty = document.getElementById("membersPreviewEmpty");
+
+    const MEMBERS_PREVIEW_COLS = [
+      ["ИНН", "inn"],
+      ["Наименование", "name"],
+      ["Состояние права", "right"],
+      ["Уровень ВВ", "vv"],
+      ["Уровень ОДО", "odo"],
+      ["Дата регистрации", "reg"],
+      ["Приостановки", "susp"],
+      ["Записей по ИНН", "dup"],
+    ];
+
+    let membersPreviewOpen = false;
+
+    const fileCards = {
+      members: { card: document.getElementById("membersCard"), name: document.getElementById("membersName") },
+      contracts: { card: document.getElementById("contractsCard"), name: document.getElementById("contractsName") },
+    };
+
+    /** Отметить слот файла: name = имя файла или null, чтобы сбросить слот. */
+    function markFilled(kind, name) {
+      const { card, name: nameEl } = fileCards[kind];
+      card.classList.toggle("filled", !!name);
+      if (name) card.dataset.ready = "true";
+      else delete card.dataset.ready;
+      nameEl.textContent = name || "файл не выбран";
+    }
+
+    // file:// умеет дотянуться до helper, https (GitHub Pages) — нет (mixed content).
+    const apiBase =
+      location.protocol === "http:" ? "" : location.protocol === "file:" ? HELPER_ORIGIN : null;
+
+    let pollTimer = null;
+
+    function esc(s) {
+      return String(s ?? "").replace(/[&<>"]/g, (c) => `&${{ "&": "amp", "<": "lt", ">": "gt", '"': "quot" }[c]};`);
+    }
+
+    function setRegStatus(kind, html) {
+      registryStatus.dataset.state = kind;
+      registryStatusText.innerHTML = html;
+    }
+
+    function showRegError(msg) {
+      registryError.style.display = "block";
+      registryError.textContent = msg;
+    }
+    function clearRegError() {
+      registryError.style.display = "none";
+      registryError.textContent = "";
+    }
+
+    function setProgress(done, total) {
+      registryProgress.classList.remove("hidden");
+      if (total > 0) {
+        registryProgress.dataset.indeterminate = "false";
+        registryBar.style.width = Math.round((done / total) * 100) + "%";
+        registryProgress.setAttribute("aria-valuenow", String(Math.round((done / total) * 100)));
+      } else {
+        registryProgress.dataset.indeterminate = "true";
+        registryBar.style.width = "";
+        registryProgress.removeAttribute("aria-valuenow");
+      }
+    }
+
+    function hideProgress() {
+      registryProgress.classList.add("hidden");
+      registryProgress.dataset.indeterminate = "false";
+      registryBar.style.width = "0";
+    }
+
+    function fmtExportedAt(iso) {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return String(iso || "—");
+      const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      return `${fmtDate(startOfDay(d))} ${time}`;
+    }
+
+    function sroDisplayName(payload) {
+      if (!payload) return { full: "", short: "" };
+      const full = String(payload.sro_name || "").trim();
+      const short = String(payload.sro_short_name || "").trim();
+      return { full, short };
+    }
+
+    function renderSroTitle(payload) {
+      const { full, short } = sroDisplayName(payload);
+      if (!full && !short) {
+        sroTitle.classList.add("hidden");
+        sroTitle.textContent = "";
+        return;
+      }
+      const primary = full || short;
+      // Короткое — только если реально короче полного (у части СРО «short» длиннее).
+      const secondary =
+        full && short && short !== full && short.length < full.length ? short : "";
+      sroTitle.innerHTML =
+        esc(primary) +
+        (secondary ? `<span class="sro-short">${esc(secondary)}</span>` : "");
+      sroTitle.classList.remove("hidden");
+    }
+
+    function clearSroTitle() {
+      sroTitle.classList.add("hidden");
+      sroTitle.textContent = "";
+    }
+
+    function rightClass(right) {
+      const s = String(right || "").toLowerCase();
+      if (s.includes("приостанов")) return "right-suspended";
+      if (s.includes("прекращ")) return "right-terminated";
+      return "";
+    }
+
+    function membersPreviewRows(rows) {
+      return (rows || []).map((r) => ({
+        inn: String(r["ИНН"] ?? ""),
+        name: String(r["Наименование"] ?? ""),
+        right: String(r["Состояние права"] ?? ""),
+        vv: String(r["Уровень ВВ"] ?? ""),
+        odo: String(r["Уровень ОДО"] ?? ""),
+        reg: String(r["Дата регистрации в реестре СРО"] ?? ""),
+        susp: String(r["Периоды приостановок"] ?? ""),
+        dup: r["Записей по ИНН"] > 1 ? String(r["Записей по ИНН"]) : "",
+      }));
+    }
+
+    function setMembersPreviewOpen(open) {
+      membersPreviewOpen = !!open;
+      membersPreview.classList.toggle("hidden", !membersPreviewOpen);
+      membersPreviewBtn.setAttribute("aria-expanded", membersPreviewOpen ? "true" : "false");
+      membersPreviewBtn.textContent = membersPreviewOpen ? "Скрыть реестр" : "Показать реестр";
+      if (membersPreviewOpen) {
+        renderMembersPreview();
+        membersPreviewFilter.focus();
+      }
+    }
+
+    function hideMembersPreview() {
+      membersPreviewOpen = false;
+      membersPreview.classList.add("hidden");
+      registryActions.classList.add("hidden");
+      membersPreviewBtn.setAttribute("aria-expanded", "false");
+      membersPreviewBtn.textContent = "Показать реестр";
+      membersPreviewFilter.value = "";
+      membersPreviewHead.innerHTML = "";
+      membersPreviewBody.innerHTML = "";
+      membersPreviewEmpty.classList.add("hidden");
+    }
+
+    function renderMembersPreview() {
+      const rows = membersPreviewRows(state.membersRows);
+      const q = String(membersPreviewFilter.value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ");
+      const filtered = !q
+        ? rows
+        : rows.filter((r) =>
+            [r.inn, r.name, r.right, r.vv, r.odo, r.reg, r.susp].join(" ").toLowerCase().includes(q)
+          );
+
+      membersPreviewHead.innerHTML =
+        "<tr>" +
+        MEMBERS_PREVIEW_COLS.map(([label, key]) => {
+          const cls = key === "inn" || key === "dup" ? ' class="num"' : "";
+          return `<th${cls}>${esc(label)}</th>`;
+        }).join("") +
+        "</tr>";
+
+      if (!filtered.length) {
+        membersPreviewBody.innerHTML = "";
+        membersPreviewEmpty.classList.remove("hidden");
+      } else {
+        membersPreviewEmpty.classList.add("hidden");
+        membersPreviewBody.innerHTML = filtered
+          .map((r) => {
+            const cells = MEMBERS_PREVIEW_COLS.map(([, key]) => {
+              const val = r[key] || "—";
+              if (key === "inn" || key === "dup") {
+                return `<td class="num">${esc(val)}</td>`;
+              }
+              if (key === "name" || key === "susp") {
+                return `<td class="wrap">${esc(val)}</td>`;
+              }
+              if (key === "right") {
+                const cls = rightClass(r.right);
+                return `<td class="${cls}">${esc(val)}</td>`;
+              }
+              return `<td>${esc(val)}</td>`;
+            }).join("");
+            return `<tr>${cells}</tr>`;
+          })
+          .join("");
+      }
+
+      const total = rows.length;
+      const shown = filtered.length;
+      membersPreviewCount.textContent =
+        q && shown !== total ? `${shown} из ${total}` : `${total} строк`;
+    }
+
+    function showMembersPreviewControls(rowsCount) {
+      registryActions.classList.remove("hidden");
+      membersPreviewCount.textContent = `${rowsCount} строк`;
+      membersExcelBtn.disabled = !rowsCount;
+      if (membersPreviewOpen) renderMembersPreview();
+    }
+
+    const MEMBERS_EXPORT_COLS = [
+      "ИНН",
+      "Наименование",
+      "Полное наименование",
+      "Состояние права",
+      "Уровень ВВ",
+      "Уровень ОДО",
+      "Предел ВВ, ₽",
+      "Предел ОДО, ₽",
+      "Расчёт обязательств",
+      "Дата расчёта размера обязательств",
+      "Дата регистрации в реестре СРО",
+      "Периоды приостановок",
+      "Периоды ограничения по конкурентным",
+      "Реестровый номер",
+      "Тип члена",
+      "Регион",
+      "Формулировка ВВ (НОСТРОЙ)",
+      "Формулировка ОДО (НОСТРОЙ)",
+      "Взнос КФ ВВ",
+      "Взнос КФ ОДО",
+      "Соответствие требованиям",
+      "Дата прекращения членства",
+      "Основание прекращения",
+      "Решений по праву",
+      "История решений",
+      "Обновлено в НОСТРОЙ",
+      "Ссылка НОСТРОЙ",
+      "Записей по ИНН",
+    ];
+
+    const MEMBERS_EXPORT_MONEY = new Set([
+      "Расчёт обязательств",
+      "Взнос КФ ВВ",
+      "Взнос КФ ОДО",
+    ]);
+
+    function membersExportColumns(rows) {
+      if (!rows || !rows.length) return MEMBERS_EXPORT_COLS.slice();
+      const present = new Set();
+      rows.forEach((r) => Object.keys(r).forEach((k) => present.add(k)));
+      const ordered = MEMBERS_EXPORT_COLS.filter((k) => present.has(k));
+      const extras = [...present].filter((k) => !MEMBERS_EXPORT_COLS.includes(k));
+      // Контрагент из демо/ручных файлов — в начало рядом с наименованием.
+      if (extras.includes("Контрагент") && !ordered.includes("Наименование")) {
+        ordered.unshift("Контрагент");
+        extras.splice(extras.indexOf("Контрагент"), 1);
+      }
+      return ordered.concat(extras);
+    }
+
+    function exportMembersExcel() {
+      const rows = state.membersRows;
+      if (!rows || !rows.length) {
+        showRegError("Нет загруженного реестра членов для выгрузки.");
+        return;
+      }
+      if (typeof XLSX === "undefined") {
+        showRegError("Библиотека Excel не загрузилась.");
+        return;
+      }
+      clearRegError();
+
+      const cols = membersExportColumns(rows);
+      const moneyCols = cols
+        .map((c, i) => (MEMBERS_EXPORT_MONEY.has(c) ? i : -1))
+        .filter((i) => i >= 0);
+      const aoa = [cols].concat(
+        rows.map((r) =>
+          cols.map((c) => {
+            const v = r[c];
+            if (v == null || v === "") return "";
+            if (MEMBERS_EXPORT_MONEY.has(c) && typeof v === "number") return v;
+            if (typeof v === "number" || typeof v === "boolean") return v;
+            return String(v);
+          })
+        )
+      );
+
+      const widths = cols.map((c) => {
+        if (c === "ИНН" || c === "Записей по ИНН") return 14;
+        if (c.includes("наименование") || c === "Наименование" || c === "Контрагент") return 36;
+        if (c.includes("Период") || c.includes("История") || c.includes("Основание")) return 28;
+        if (c.includes("Ссылка")) return 32;
+        if (c.includes("Формулировка")) return 28;
+        return 16;
+      });
+
+      const ws = styleSheet(XLSX.utils.aoa_to_sheet(aoa), {
+        headerRows: 1,
+        widths,
+        moneyCols,
+        autofilter: true,
+      });
+
+      const meta = state.membersMeta;
+      const summaryAoA = [
+        ["Показатель", "Значение"],
+        ["СРО", meta ? meta.sro_id : ""],
+        ["Название СРО", meta ? meta.sro_name || meta.sro_short_name || "" : ""],
+        ["Источник", meta ? meta.source || "НОСТРОЙ" : state.membersSource === "file" ? "файл" : "демо"],
+        ["Дата выгрузки", meta ? fmtExportedAt(meta.exported_at) : ""],
+        ["Членов в файле", rows.length],
+      ];
+      if (meta && meta.stats) {
+        const s = meta.stats;
+        summaryAoA.push(
+          ["С приостановками", s.with_suspensions ?? ""],
+          ["Право действует", s.right_active ?? ""],
+          ["Право приостановлено", s.right_suspended ?? ""],
+          ["Право прекращено", s.right_terminated ?? ""],
+          ["Без уровня ОДО", s.no_odo_level ?? ""],
+          ["ИНН с 2+ записями", s.duplicate_inn ?? ""]
+        );
+      }
+      const wsSummary = XLSX.utils.aoa_to_sheet(summaryAoA);
+      const sumRange = XLSX.utils.decode_range(wsSummary["!ref"]);
+      for (let R = sumRange.s.r; R <= sumRange.e.r; R++) {
+        const a = XLSX.utils.encode_cell({ r: R, c: 0 });
+        const b = XLSX.utils.encode_cell({ r: R, c: 1 });
+        if (wsSummary[a]) {
+          wsSummary[a].s = R === 0 ? { ...XL.header } : { ...XL.label, border: XL.cell.border };
+        }
+        if (wsSummary[b]) {
+          wsSummary[b].s = R === 0 ? { ...XL.header } : { ...XL.cell };
+        }
+      }
+      wsSummary["!cols"] = [{ wch: 28 }, { wch: 56 }];
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, wsSummary, "Сводка");
+      XLSX.utils.book_append_sheet(wb, ws, "Реестр членов");
+
+      const today = new Date();
+      const ymd =
+        `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-` +
+        String(today.getDate()).padStart(2, "0");
+      const sroPart = meta && meta.sro_id != null ? `_СРО_${meta.sro_id}` : "";
+      XLSX.writeFile(wb, `реестр_членов${sroPart}_${ymd}.xlsx`);
+    }
+
+    function renderRegistryMeta(payload) {
+      const s = payload.stats || {};
+      const items = [
+        ["Членов загружено", s.members, ""],
+        ["Дата выгрузки", fmtExportedAt(payload.exported_at), ""],
+        ["С приостановками", s.with_suspensions, s.with_suspensions ? "warn" : ""],
+        ["Право приостановлено", s.right_suspended, s.right_suspended ? "crit" : ""],
+        ["Право прекращено", s.right_terminated, ""],
+        ["Без уровня ОДО", s.no_odo_level, s.no_odo_level ? "warn" : ""],
+      ];
+      if (s.duplicate_inn) items.push(["ИНН с 2+ записями", s.duplicate_inn, "warn"]);
+      if (s.cards_failed) items.push(["Карточек не скачано", s.cards_failed, "crit"]);
+      if (s.unparsed_levels) items.push(["Уровень не распознан", s.unparsed_levels, "crit"]);
+
+      registryMeta.innerHTML = items
+        .map(
+          ([label, value, cls]) =>
+            `<div><dt>${esc(label)}</dt><dd class="${cls}">${esc(value ?? "—")}</dd></div>`
+        )
+        .join("");
+      registryMeta.classList.remove("hidden");
+    }
+
+    function applyRegistry(payload) {
+      state.membersRows = payload.members;
+      state.membersMeta = payload;
+      state.membersSource = "registry";
+      membersInput.value = "";
+      markFilled("members", null);
+      renderSroTitle(payload);
+      renderRegistryMeta(payload);
+      showMembersPreviewControls(payload.members.length);
+      updateReady();
+    }
+
+    function onMembersFromFile(file, rows) {
+      hideProgress();
+      registryMeta.classList.add("hidden");
+      clearSroTitle();
+      markFilled("members", file.name);
+      setRegStatus("ok", `Реестр членов из файла <code>${esc(file.name)}</code>: ${rows} строк.`);
+      showMembersPreviewControls(rows);
+      if (membersPreviewOpen) renderMembersPreview();
+    }
+
+    function onMembersFromSample(rows) {
+      hideProgress();
+      registryMeta.classList.add("hidden");
+      clearSroTitle();
+      setRegStatus("ok", `Демо-данные: ${rows} членов. НОСТРОЙ не запрашивался.`);
+      showMembersPreviewControls(rows);
+      if (membersPreviewOpen) renderMembersPreview();
+    }
+
+    function sroIdValue() {
+      const digits = String(sroInput.value || "").replace(/\D/g, "");
+      return digits;
+    }
+
+    async function api(path, init) {
+      const resp = await fetch(apiBase + path, init);
+      return resp;
+    }
+
+    async function helperAlive() {
+      if (apiBase === null) return false;
+      try {
+        const resp = await api("/api/health");
+        if (!resp.ok) return false;
+        const body = await resp.json();
+        return body.app === "sro-auditor-helper";
+      } catch {
+        return false;
+      }
+    }
+
+    function helperMissingStatus() {
+      fetchBtn.disabled = true;
+      hideProgress();
+      registryMeta.classList.add("hidden");
+      hideMembersPreview();
+      clearSroTitle();
+      setRegStatus(
+        "warn",
+        `Локальный helper не запущен. В папке проекта: <code>${esc(HELPER_CMD)}</code> — ` +
+          "и откройте чекер по адресу из консоли. Либо загрузите реестр членов вручную."
+      );
+      membersFallback.open = true;
+    }
+
+    async function loadCache(sroId, opts) {
+      const quiet = !!(opts && opts.quiet);
+      try {
+        const resp = await api(`/api/nostroy/${sroId}`);
+        if (resp.status === 404) {
+          registryMeta.classList.add("hidden");
+          hideMembersPreview();
+          clearSroTitle();
+          setRegStatus(
+            "warn",
+            `Локального кэша по СРО ${esc(sroId)} нет. Нажмите «Обновить с НОСТРОЙ».`
+          );
+          return false;
+        }
+        if (!resp.ok) throw new Error(`helper ответил ${resp.status}`);
+        const payload = await resp.json();
+        applyRegistry(payload);
+        const { full, short } = sroDisplayName(payload);
+        const label =
+          short && (!full || short.length < full.length)
+            ? short
+            : full && full.length <= 96
+              ? full
+              : short || "";
+        const nameBit = label ? ` · ${esc(label)}` : "";
+        setRegStatus(
+          "ok",
+          `СРО ${esc(payload.sro_id)}${nameBit}: ${payload.members.length} членов из локального кэша.`
+        );
+        return true;
+      } catch (err) {
+        if (!quiet) showRegError("Не удалось прочитать кэш: " + err.message);
+        return false;
+      }
+    }
+
+    function pollProgress(sroId) {
+      clearTimeout(pollTimer);
+      pollTimer = setTimeout(async () => {
+        let job;
+        try {
+          const resp = await api(`/api/nostroy/${sroId}/progress`);
+          job = await resp.json();
+        } catch {
+          finishRefresh();
+          setRegStatus("error", "Helper перестал отвечать. Проверьте окно с сервером.");
+          membersFallback.open = true;
+          return;
+        }
+        if (job.state === "running") {
+          setProgress(job.done || 0, job.total || 0);
+          setRegStatus("work", esc(job.message || "выгрузка…"));
+          pollProgress(sroId);
+          return;
+        }
+        finishRefresh();
+        if (job.state === "error") {
+          setRegStatus("error", `Выгрузка не удалась: ${esc(job.error || job.message)}`);
+          showRegError(
+            "Выгрузка не удалась. Повторите позже или загрузите реестр членов вручную " +
+              "(файл cache/nostroy/<номер>/members.csv остаётся от прошлой выгрузки)."
+          );
+          membersFallback.open = true;
+          return;
+        }
+        await loadCache(sroId, {});
+      }, POLL_MS);
+    }
+
+    function finishRefresh() {
+      clearTimeout(pollTimer);
+      hideProgress();
+      fetchBtn.disabled = false;
+      fetchBtn.textContent = "Обновить с НОСТРОЙ";
+    }
+
+    async function refreshFromNostroy() {
+      const sroId = sroIdValue();
+      clearRegError();
+      if (!sroId) {
+        setRegStatus("error", "Укажите номер СРО — только цифры, как в адресе реестра.");
+        sroInput.focus();
+        return;
+      }
+      localStorage.setItem(SRO_ID_KEY, sroId);
+      fetchBtn.disabled = true;
+      fetchBtn.textContent = "Обновление…";
+      setProgress(0, 0);
+      setRegStatus("work", "подключение к НОСТРОЙ");
+      try {
+        const resp = await api(`/api/nostroy/${sroId}/refresh`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ force: false }),
+        });
+        const body = await resp.json();
+        if (!resp.ok && resp.status !== 409) throw new Error(body.error || `helper ответил ${resp.status}`);
+        if (resp.status === 409) {
+          setRegStatus("work", esc(body.message));
+        }
+        pollProgress(sroId);
+      } catch (err) {
+        finishRefresh();
+        setRegStatus("error", "Helper не отвечает. Запущен ли " + `<code>${esc(HELPER_CMD)}</code>?`);
+        showRegError(err.message);
+        membersFallback.open = true;
+      }
+    }
+
+    fetchBtn.addEventListener("click", refreshFromNostroy);
+    membersPreviewBtn.addEventListener("click", () => {
+      if (!state.membersRows || !state.membersRows.length) return;
+      setMembersPreviewOpen(!membersPreviewOpen);
+    });
+    membersExcelBtn.addEventListener("click", exportMembersExcel);
+    membersPreviewFilter.addEventListener("input", () => {
+      if (membersPreviewOpen) renderMembersPreview();
+    });
+    sroInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        refreshFromNostroy();
+      }
+    });
+    sroInput.addEventListener("change", async () => {
+      const sroId = sroIdValue();
+      if (!sroId || fetchBtn.disabled) return;
+      localStorage.setItem(SRO_ID_KEY, sroId);
+      if (state.membersSource === "registry") {
+        state.membersRows = null;
+        state.membersMeta = null;
+        state.membersSource = null;
+        registryMeta.classList.add("hidden");
+        hideMembersPreview();
+        clearSroTitle();
+        updateReady();
+      }
+      await loadCache(sroId, { quiet: true });
+    });
+
+    (async function initRegistry() {
+      const saved = localStorage.getItem(SRO_ID_KEY);
+      if (saved) sroInput.value = saved;
+      if (!(await helperAlive())) {
+        helperMissingStatus();
+        return;
+      }
+      hideProgress();
+      await loadCache(sroIdValue(), { quiet: true });
+    })();
