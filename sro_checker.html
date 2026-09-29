@@ -1190,6 +1190,21 @@
       border-radius: 4px;
     }
 
+    .site-credit {
+      margin: 1.25rem 0 0;
+      text-align: center;
+      color: var(--color-muted);
+      font-size: 0.8rem;
+    }
+    .site-credit a {
+      color: inherit;
+      text-decoration: underline;
+      text-underline-offset: 0.15em;
+    }
+    .site-credit a:hover {
+      color: var(--color-ink, #0f172a);
+    }
+
     @media (max-width: 720px) {
       .panel { padding: 16px; }
     }
@@ -1402,6 +1417,11 @@
       </footer>
     </aside>
   </div>
+
+  <p class="site-credit">
+    Разработка —
+    <a href="https://maximrafikov.ru/" target="_blank" rel="noopener noreferrer">Максим Рафиков</a>
+  </p>
 
   <script src="./_sro_logic.js"></script>
 </body>
